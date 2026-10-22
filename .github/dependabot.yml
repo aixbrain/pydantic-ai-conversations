@@ -1,0 +1,31 @@
+# Weekly lockfile bumps for the packages this one builds on and the database drivers its extras
+# install, so CI tests their newest releases inside the declared ranges. A new harness minor or
+# app-factory minor needs a deliberate change to the bounds in pyproject.toml.
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    versioning-strategy: lockfile-only
+    allow:
+      - dependency-name: pydantic-ai-slim
+      - dependency-name: pydantic-ai-harness
+      - dependency-name: pydantic-ai-app-factory
+      - dependency-name: fastapi
+      - dependency-name: asyncpg
+      - dependency-name: psycopg
+      - dependency-name: psycopg-pool
+      - dependency-name: pymongo
+    groups:
+      dependencies:
+        patterns: ['*']
+
+  # The workflows pin each action to a commit, so updates only arrive through these PRs.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']

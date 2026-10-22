@@ -1,0 +1,51 @@
+"""The package re-exports its contract; private modules stay private."""
+
+import pydantic_ai_conversations as pkg
+
+
+def test_public_names() -> None:
+    assert set(pkg.__all__) == {
+        'ConversationDetail',
+        'ConversationList',
+        'ConversationMeta',
+        'ConversationNotFound',
+        'ConversationOut',
+        'ConversationRegistry',
+        'ConversationsCapability',
+        'ConversationsFeature',
+        'DeletionEvent',
+        'DeletionKind',
+        'FailureDescriber',
+        'HasUserId',
+        'InMemoryConversationRegistry',
+        'OnDeleteHook',
+        'NewMessagesPreparer',
+        'RegistryUnavailable',
+        'RunPhase',
+        'ScopeField',
+        'SnapshotPreparer',
+        'StripRejectedDrafts',
+        'SupportsConversationDeps',
+        'SupportsPing',
+        'SupportsRunDeletion',
+        'SupportsTransientErrors',
+        'TranscriptTurn',
+        'TranscriptTurnOut',
+        'TurnError',
+        'TurnErrorOut',
+        'TranscriptView',
+        'PreparingStepStore',
+        'TurnRecord',
+        'UIMessageEncoder',
+        'UserDependency',
+        'agent_error_mapper',
+        'build_conversation_router',
+        'build_namespace',
+        'load_transcript',
+        'parse_scope',
+        'rejected_draft_pairs',
+        'scope_extras_model',
+        'strip_rejected_drafts',
+    }
+    for name in pkg.__all__:
+        assert getattr(pkg, name) is not None

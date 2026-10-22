@@ -1,0 +1,160 @@
+[project]
+name = "pydantic-ai-conversations"
+version = "0.1.0"
+description = "Conversation persistence for pydantic-ai-app-factory, backed by pydantic-ai-harness StepPersistence"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "aiXbrain GmbH", email = "dev@aixbrain.de" }]
+keywords = ["pydantic-ai", "agent", "conversations", "persistence", "fastapi"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+dependencies = [
+    # `sqlite/` dispatches its blocking sqlite3 calls with `anyio.to_thread`, the same way the
+    # harness's own SQLite store does; already transitive via fastapi and pydantic-ai-slim, but
+    # declared because we import it.
+    "anyio>=4",
+    # The floor pydantic-ai-app-factory itself requires; a lower one could never be installed.
+    "fastapi>=0.137",
+    # `_routes.py` and `scope.py` build models with it directly. `pydantic_core` (whose
+    # `to_jsonable_python` `_routes.py` uses) is deliberately not listed beside it: it is
+    # pydantic's compiled core, pinned by pydantic itself, and a second range here could only
+    # collide with that pin.
+    "pydantic>=2",
+    "pydantic-ai-slim>=2.16,<3",
+    "pydantic-ai-app-factory>=0.4,<0.5",
+    # 0.x: this package leans on four harness guarantees verified against 0.59.x -- `list_runs`
+    # sorted by started_at ascending, `latest_snapshot` returning complete snapshots only, no
+    # delete primitive, and `StepPersistence` adopting `ctx.run_id` as the run id as long as no
+    # `agent_name` is passed to it (feature.py therefore never passes one) -- an unpinned range
+    # risks a silent break on a later 0.x. Each harness 0.N pins pydantic-ai-slim 2.N exactly,
+    # so this pin also fixes the pydantic-ai version.
+    "pydantic-ai-harness>=0.59,<0.60",
+]
+
+[project.optional-dependencies]
+# The shipped MongoDB backend (`pydantic_ai_conversations.mongo`). Same floor the harness's
+# own `mongodb` extra uses, because the kit subclasses its `MongoStepStore`.
+mongodb = ["pymongo>=4.17"]
+# The shipped PostgreSQL backend (`pydantic_ai_conversations.postgres`). The registry runs on
+# psycopg 3, so an app can hand it the pool it already has; behind a transaction pooler (e.g.
+# PgBouncer in transaction mode), set `prepare_threshold=None` on that pool -- psycopg
+# auto-prepares after five uses, which such poolers do not support. The step store subclasses the
+# harness's `PostgresStepStore`, which takes an asyncpg pool, so the extra carries both drivers.
+postgres = ["psycopg[binary]>=3.2", "psycopg-pool>=3.2", "asyncpg>=0.30"]
+
+[project.urls]
+Homepage = "https://github.com/aixbrain/pydantic-ai-conversations"
+Repository = "https://github.com/aixbrain/pydantic-ai-conversations"
+Issues = "https://github.com/aixbrain/pydantic-ai-conversations/issues"
+
+[dependency-groups]
+dev = [
+    "fastapi[standard]>=0.137",  # the examples' server
+    # Wire-level provider payload test (tests/test_wire_history.py). The floor is the one
+    # pydantic-ai-slim's `anthropic` extra declares, because its Anthropic model imports types
+    # older releases lack. anthropic 1.x is the httpx2 rebuild and rejects an httpx client
+    # outright, so the mock transport it is driven through has to come from httpx2 -- declared
+    # here rather than left to anthropic's own pin.
+    "anthropic>=1.12.1",
+    "httpx2>=2.10",
+    "httpx>=0.27",  # starlette's TestClient, which is still on httpx 0.x
+    "pytest>=9",
+    "pytest-asyncio>=1",
+    "pytest-cov>=7",
+    "pyright>=1.1.411",
+    "ruff>=0.16",
+    # real mongod for the conformance suite; no fake proves the atomic claim. Floor is 4.15, not
+    # a bare 4: earlier releases predate the `testcontainers.community.*` layout we import from.
+    "testcontainers[postgres,mongodb]>=4.15",
+    "pymongo>=4.17",  # the backend under test
+    "psycopg[binary]>=3.2",
+    "psycopg-pool>=3.2",
+    "asyncpg>=0.30",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pydantic_ai_conversations"]
+
+# An allow-list, so a local build ships only tracked sources, never untracked files in the checkout.
+# The doc pages are named one by one and subfolders of `docs/` are excluded, because hatch matches
+# `README.md` at any depth and a wildcard cannot tell a tracked page from a local note.
+[tool.hatch.build.targets.sdist]
+include = [
+    "pydantic_ai_conversations",
+    "tests",
+    "docs/README.md",
+    "docs/api-reference.md",
+    "docs/backends.md",
+    "docs/concepts.md",
+    "docs/continuing-a-conversation.md",
+    "docs/deleting.md",
+    "docs/extending.md",
+    "docs/getting-started.md",
+    "docs/http-api.md",
+    "docs/operations.md",
+    "docs/scope-and-access.md",
+    "docs/testing.md",
+    "README.md",
+    "LICENSE",
+    "AGENTS.md",
+]
+exclude = ["docs/*/"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C901"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.pyright]
+include = ["pydantic_ai_conversations", "pydantic_ai_conversations_examples", "tests"]
+pythonVersion = "3.11"
+typeCheckingMode = "strict"
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
+reportMissingTypeStubs = false
+# Redundant with the 100% coverage gate (a truly unused function stays uncovered) and a false
+# positive on framework-registered route handlers.
+reportUnusedFunction = false
+
+# Our own tests are allowed to import private module members of this same package (see AGENTS.md);
+# the check stays on everywhere else so real cross-module private access is still caught. Files
+# outside `tests` fall back to the top-level `[tool.pyright]` settings automatically -- no need for
+# a second, redundant `root = "."` environment.
+[[tool.pyright.executionEnvironments]]
+root = "tests"
+reportPrivateUsage = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+branch = true
+source = ["pydantic_ai_conversations"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
