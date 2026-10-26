@@ -25,8 +25,15 @@ from pydantic_ai_conversations._routes import (
     TranscriptTurnOut,
     TurnErrorOut,
     UIMessageEncoder,
-    UserDependency,
     build_conversation_router,
+)
+from pydantic_ai_conversations.addons import (
+    AddonCaller,
+    AddonRouteGuard,
+    AddonTurnQuery,
+    ConversationAddon,
+    SupportsRouters,
+    SupportsTurnFields,
 )
 from pydantic_ai_conversations.errors import ConversationNotFound, RegistryUnavailable
 from pydantic_ai_conversations.feature import ConversationsFeature
@@ -41,6 +48,7 @@ from pydantic_ai_conversations.registry import (
 from pydantic_ai_conversations.scope import (
     HasUserId,
     ScopeField,
+    UserDependency,
     build_namespace,
     parse_scope,
     scope_extras_model,
@@ -55,6 +63,10 @@ from pydantic_ai_conversations.stores import (
 )
 
 __all__ = [
+    'AddonCaller',
+    'AddonRouteGuard',
+    'AddonTurnQuery',
+    'ConversationAddon',
     'ConversationDetail',
     'ConversationList',
     'ConversationMeta',
@@ -77,8 +89,10 @@ __all__ = [
     'StripRejectedDrafts',
     'SupportsConversationDeps',
     'SupportsPing',
+    'SupportsRouters',
     'SupportsRunDeletion',
     'SupportsTransientErrors',
+    'SupportsTurnFields',
     'TranscriptTurn',
     'TranscriptTurnOut',
     'TurnError',

@@ -9,7 +9,7 @@ import json
 from collections.abc import AsyncIterator
 from typing import Annotated, Any
 
-from fastapi import Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.testclient import TestClient
 from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart
@@ -17,7 +17,12 @@ from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls
 from pydantic_ai_app_factory import AppDeps, UserContext, create_agent_app
 from pydantic_ai_harness.step_persistence import InMemoryStepStore
 
-from pydantic_ai_conversations import ConversationsFeature, InMemoryConversationRegistry
+from pydantic_ai_conversations import (
+    AddonCaller,
+    AddonRouteGuard,
+    ConversationsFeature,
+    InMemoryConversationRegistry,
+)
 
 
 def _auth() -> UserContext:
@@ -67,6 +72,7 @@ def test_feature_config_reports_the_switches_a_client_branches_on() -> None:
         'title_route': True,
         'ui_messages': False,
         'filterable_attrs': [],
+        'addons': {},
     }
 
 
@@ -172,3 +178,42 @@ def test_chat_approves_a_paused_tool_call_by_naming_the_paused_turn() -> None:
     assert [(t['phase'], t['previous_run_id']) for t in turns] == [('answered', None), ('answered', paused)]
     assert [m['kind'] for m in turns[0]['messages']] == ['request', 'response']
     assert [p['part_kind'] for m in turns[1]['messages'] for p in m['parts']] == ['tool-return', 'text']
+
+
+class _PingAddon:
+    """A route-only add-on, to prove the app factory mounts it behind the app's auth."""
+
+    name = 'ping'
+
+    def routers(self, guard: AddonRouteGuard) -> list[APIRouter]:
+        router = APIRouter(prefix='/conversations')
+
+        @router.get('/{conversation_id}/ping')
+        async def ping(conversation_id: str, caller: Annotated[AddonCaller, Depends(guard.caller())]) -> dict[str, str]:
+            return {'user': caller.user.user_id}
+
+        return [router]
+
+
+def test_add_on_routes_are_mounted_behind_the_apps_auth_which_runs_once() -> None:
+    """The add-on's `Depends(guard.caller())` resolves through the app's own auth object, which
+    FastAPI caches per request: the provider runs once, not once for the guard and once more."""
+    calls = 0
+
+    def counting_auth(x_api_key: Annotated[str | None, Header()] = None) -> UserContext:
+        nonlocal calls
+        calls += 1
+        if x_api_key != 'k':
+            raise HTTPException(status_code=401)
+        return UserContext(user_id='alice', tenant_id='t1')
+
+    feature = ConversationsFeature(
+        registry=InMemoryConversationRegistry(), step_store=InMemoryStepStore(), addons=[_PingAddon()]
+    )
+    agent: Agent[AppDeps, Any] = Agent(FunctionModel(_model_fn), deps_type=AppDeps)
+    client = TestClient(create_agent_app(agent, auth=counting_auth, features=[feature]))
+
+    assert client.get('/conversations/c1/ping').status_code == 401
+    calls = 0
+    assert client.get('/conversations/c1/ping', headers={'x-api-key': 'k'}).json() == {'user': 'alice'}
+    assert calls == 1

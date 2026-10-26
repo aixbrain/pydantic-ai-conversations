@@ -3,12 +3,12 @@
 import json
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Annotated, Any
 
 import pytest
-from fastapi import FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 from fastapi.testclient import TestClient
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai_app_factory import UserContext
@@ -16,6 +16,7 @@ from pydantic_ai_harness.step_persistence import ContinuableSnapshot, InMemorySt
 
 from pydantic_ai_conversations._capability import ConversationsCapability
 from pydantic_ai_conversations._routes import DeletionEvent
+from pydantic_ai_conversations.addons import AddonCaller, AddonRouteGuard, AddonTurnQuery
 from pydantic_ai_conversations.feature import ConversationsFeature
 from pydantic_ai_conversations.registry import InMemoryConversationRegistry
 from pydantic_ai_conversations.scope import build_namespace, parse_scope
@@ -562,6 +563,7 @@ def test_config_reports_the_defaults() -> None:
         'title_route': False,
         'ui_messages': False,
         'filterable_attrs': [],
+        'addons': {},
     }
 
 
@@ -577,6 +579,7 @@ def test_config_reports_a_fully_configured_feature() -> None:
         'title_route': True,
         'ui_messages': True,
         'filterable_attrs': ['case_id', 'status'],
+        'addons': {},
     }
 
 
@@ -585,3 +588,100 @@ def test_config_is_json_serializable() -> None:
     config = _feature(ui_messages=_encode_ui, filterable_attrs=('case_id',)).config()
     assert config['ui_messages'] is True  # the encoder is reported as presence, never as itself
     assert json.loads(json.dumps(config)) == config
+
+
+# --- turn add-ons ---------------------------------------------------------------------------------
+
+
+class _MarkOut(BaseModel):
+    seen: bool
+
+
+class _MarkAddon:
+    name = 'mark'
+    turn_model = _MarkOut
+
+    async def load_turns(self, query: AddonTurnQuery) -> Mapping[str, BaseModel]:
+        return {t.run_id: _MarkOut(seen=True) for t in query.turns}
+
+
+def test_config_lists_the_configured_addons_by_name() -> None:
+    feature = ConversationsFeature(
+        registry=InMemoryConversationRegistry(), step_store=InMemoryStepStore(), addons=[_MarkAddon()]
+    )
+    assert feature.config()['addons'] == {'mark': {}}
+
+
+def test_routers_pass_addons_to_the_detail_route() -> None:
+    feature = ConversationsFeature(
+        registry=InMemoryConversationRegistry(), step_store=InMemoryStepStore(), addons=[_MarkAddon()]
+    )
+    app = FastAPI()
+    for router in feature.routers(auth=_auth):
+        app.include_router(router)
+    components = TestClient(app).get('/openapi.json').json()['components']['schemas']
+    assert 'mark' in components['TurnAddonsOut']['properties']
+
+
+class _RoutedAddon:
+    """Brings a route of its own, built on the context's helpers; no turn fields."""
+
+    name = 'mark_routes'
+
+    def routers(self, guard: AddonRouteGuard) -> list[APIRouter]:
+        router = APIRouter(prefix='/conversations')
+
+        @router.get('/{conversation_id}/turns/{run_id}/mark')
+        async def mark(
+            conversation_id: str, run_id: str, caller: Annotated[AddonCaller, Depends(guard.caller())]
+        ) -> dict[str, str]:
+            turn = await guard.require_turn(caller.namespace_key, conversation_id, run_id)
+            return {'run_id': turn.run_id, 'by': caller.user.user_id}
+
+        return [router]
+
+
+async def test_routers_mount_the_add_ons_routes_behind_the_same_auth() -> None:
+    registry = InMemoryConversationRegistry()
+    feature = ConversationsFeature(registry=registry, step_store=InMemoryStepStore(), addons=[_RoutedAddon()])
+    namespace = feature.namespace_for(UserContext(user_id='alice', tenant_id='t1'))
+    await registry.register_conversation(namespace, 'c1', created_by='alice')
+    await registry.start_turn(namespace, 'c1', run_id='r1', author_user_id='alice')
+    app = FastAPI()
+    for router in feature.routers(auth=_auth):
+        app.include_router(router)
+    client = TestClient(app)
+
+    assert client.get('/conversations/c1/turns/r1/mark').json() == {'run_id': 'r1', 'by': 'alice'}
+    assert client.get('/conversations/c1/turns/r9/mark').status_code == 404
+    assert feature.config()['addons'] == {'mark_routes': {}}
+
+
+def test_an_add_on_without_routers_mounts_nothing_extra() -> None:
+    feature = ConversationsFeature(
+        registry=InMemoryConversationRegistry(), step_store=InMemoryStepStore(), addons=[_MarkAddon()]
+    )
+    assert len(feature.routers(auth=_auth)) == 1
+
+
+async def test_add_on_routes_take_the_scope_query_parameters() -> None:
+    """`guard.caller()` derives the namespace from the same scope as the conversation routes, so an
+    `extras.*` field is a required query parameter on an add-on route too."""
+    registry = InMemoryConversationRegistry()
+    feature = ConversationsFeature(
+        registry=registry,
+        step_store=InMemoryStepStore(),
+        scope=('user.tenant_id', 'extras.case_id'),
+        addons=[_RoutedAddon()],
+    )
+    namespace = feature.namespace_for(UserContext(user_id='alice', tenant_id='t1'), {'case_id': 'k1'})
+    await registry.register_conversation(namespace, 'c1', created_by='alice')
+    await registry.start_turn(namespace, 'c1', run_id='r1', author_user_id='alice')
+    app = FastAPI()
+    for router in feature.routers(auth=_auth):
+        app.include_router(router)
+    client = TestClient(app)
+
+    assert client.get('/conversations/c1/turns/r1/mark').status_code == 422
+    assert client.get('/conversations/c1/turns/r1/mark', params={'case_id': 'k1'}).status_code == 200
+    assert client.get('/conversations/c1/turns/r1/mark', params={'case_id': 'k2'}).status_code == 404

@@ -16,23 +16,26 @@ standalone mount has to pass it by hand.
 # objects, and stringized annotations cannot see a closure-scoped dependency like `scope_params`.
 
 import logging
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Any, Literal, TypeAlias
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field, StringConstraints, create_model
 from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
 from pydantic_ai_harness.step_persistence import StepStore
 from pydantic_core import to_jsonable_python
 
+from pydantic_ai_conversations._http import not_found_404, unavailable_503
 from pydantic_ai_conversations._loader import TranscriptTurn, TranscriptView, load_transcript, path_messages
 from pydantic_ai_conversations._transient import is_transient
+from pydantic_ai_conversations.addons import AddonTurnQuery, ConversationAddon, SupportsTurnFields
 from pydantic_ai_conversations.errors import ConversationNotFound, RegistryUnavailable
 from pydantic_ai_conversations.registry import ConversationMeta, ConversationRegistry, RunPhase
-from pydantic_ai_conversations.scope import HasUserId, ScopeField, build_namespace, scope_extras_model
+from pydantic_ai_conversations.scope import HasUserId, ScopeField, UserDependency, build_namespace, scope_extras_model
 
 DeletionKind: TypeAlias = Literal['soft_delete', 'purge']
 """Which deletion path invoked a cleanup hook."""
@@ -52,10 +55,6 @@ class DeletionEvent:
 
 
 OnDeleteHook: TypeAlias = Callable[[DeletionEvent], Awaitable[None]]
-
-UserDependency: TypeAlias = Callable[..., HasUserId | Awaitable[HasUserId]]
-"""Any FastAPI dependency resolving the request to an object with the user-side scope attributes.
-The app-factory's `AuthProvider` satisfies this."""
 
 UIMessageEncoder: TypeAlias = Callable[[Sequence[ModelMessage]], Sequence[Any]]
 """Renders a turn's messages into the app's UI protocol for `TranscriptTurnOut.ui_messages`.
@@ -121,6 +120,10 @@ class TranscriptTurnOut(BaseModel):
     turn to carry a retry affordance and the `started` one to render as in-flight. A failed
     turn's messages end in its prompt or a tool return, never in a tool call without a result,
     so `phase` is what tells the frontend the turn failed."""
+    addons: Mapping[str, Any] = Field(default_factory=dict)
+    """Per-turn data from the configured add-ons, keyed by add-on name; `{}` with none configured
+    and `null` under a name whose add-on has no entry for this turn. Declared open here so the
+    class parses any app's response; the router narrows it per add-on for OpenAPI."""
 
 
 class ConversationDetail(BaseModel):
@@ -188,27 +191,6 @@ def _filter_params_model(filterable_attrs: Sequence[str]) -> type[BaseModel]:
     return create_model('FilterParams', **fields)
 
 
-def _not_found_404() -> HTTPException:
-    # `HTTPException` with a structured `detail`, not `AgentError`: a standalone mount has no
-    # `AgentError` exception handler, so the same router stays correct under both mounts.
-    return HTTPException(
-        status_code=404,
-        detail={'code': 'conversations/not-found', 'message': 'The conversation does not exist.'},
-    )
-
-
-def _unavailable_503() -> HTTPException:
-    # Same shape decision as `_not_found_404`.
-    return HTTPException(
-        status_code=503,
-        detail={
-            'code': 'conversations/unavailable',
-            'message': 'Conversation storage is temporarily unavailable.',
-            'retryable': True,
-        },
-    )
-
-
 async def _fetch_transcript(
     registry: ConversationRegistry,
     step_store: StepStore,
@@ -229,7 +211,7 @@ async def _fetch_transcript(
         _logger.warning(
             'registry unavailable while fetching turn records for conversation %s', conversation_id, exc_info=True
         )
-        raise _unavailable_503() from None
+        raise unavailable_503() from None
     # `list_turns`'s ConversationNotFound is unreachable behind `get_conversation`'s `get` gate.
     try:
         return await load_transcript(
@@ -241,7 +223,7 @@ async def _fetch_transcript(
         _logger.warning(
             'step store unavailable while loading transcript for conversation %s', conversation_id, exc_info=True
         )
-        raise _unavailable_503() from None
+        raise unavailable_503() from None
 
 
 async def _soft_delete(registry: ConversationRegistry, namespace: str, conversation_id: str) -> ConversationMeta:
@@ -249,10 +231,10 @@ async def _soft_delete(registry: ConversationRegistry, namespace: str, conversat
     try:
         return await registry.soft_delete(namespace, conversation_id)
     except ConversationNotFound:
-        raise _not_found_404() from None
+        raise not_found_404() from None
     except RegistryUnavailable:
         _logger.warning('registry unavailable while deleting conversation %s', conversation_id, exc_info=True)
-        raise _unavailable_503() from None
+        raise unavailable_503() from None
 
 
 async def _write_title(registry: ConversationRegistry, namespace: str, conversation_id: str, title: str) -> None:
@@ -262,10 +244,10 @@ async def _write_title(registry: ConversationRegistry, namespace: str, conversat
     except ConversationNotFound:
         # A foreign id answers 404 like a missing one -- a write route must not become the
         # existence oracle the read routes refuse to be.
-        raise _not_found_404() from None
+        raise not_found_404() from None
     except RegistryUnavailable:
         _logger.warning('registry unavailable while titling conversation %s', conversation_id, exc_info=True)
-        raise _unavailable_503() from None
+        raise unavailable_503() from None
 
 
 def _check_filterable_attrs(scope: tuple[ScopeField, ...], filterable_attrs: Sequence[str]) -> None:
@@ -283,6 +265,64 @@ def _check_filterable_attrs(scope: tuple[ScopeField, ...], filterable_attrs: Seq
             raise ValueError(f'filterable attr {name!r} collides with a scope field or pagination param')
 
 
+_ADDON_NAME = re.compile(r'^[a-z][a-z0-9_]*$')
+
+
+def _check_addons(addons: Sequence[ConversationAddon]) -> None:
+    """Names become fields of a generated pydantic model, so they must be unique identifiers.
+    Checked when the app is built, as `filterable_attrs` are."""
+    seen: set[str] = set()
+    for addon in addons:
+        if not _ADDON_NAME.fullmatch(addon.name):
+            raise ValueError(f'add-on name {addon.name!r} must be a slug matching {_ADDON_NAME.pattern!r}')
+        if addon.name in seen:
+            raise ValueError(f'add-on name {addon.name!r} is used twice')
+        seen.add(addon.name)
+
+
+def _turn_field_addons(addons: Sequence[ConversationAddon]) -> list[tuple[str, SupportsTurnFields]]:
+    """The add-ons that contribute turn data, with their names; the others have no key under
+    `addons` (a key would promise data the add-on never provides)."""
+    return [(addon.name, addon) for addon in addons if isinstance(addon, SupportsTurnFields)]
+
+
+async def _load_addons(addons: Sequence[ConversationAddon], query: AddonTurnQuery) -> dict[str, dict[str, Any]]:
+    """Per turn, one key per turn-field add-on: its entry dumped for the wire, or `None`. Loaders
+    run in `addons` order, one after the other, each being one query. A failure the add-on declares
+    temporary is the same retryable 503 a store outage is. Entries are dumped by alias, as
+    `ui_messages` are, because the narrowed response model validates the wire shape by alias."""
+    per_turn: dict[str, dict[str, Any]] = {turn.run_id: {} for turn in query.turns}
+    for name, addon in _turn_field_addons(addons):
+        try:
+            entries = await addon.load_turns(query)
+        except Exception as exc:
+            if not is_transient(addon, exc):
+                raise
+            _logger.warning(
+                'add-on %s unavailable while loading conversation %s', name, query.conversation_id, exc_info=True
+            )
+            raise unavailable_503() from None
+        for run_id, fields in per_turn.items():
+            entry = entries.get(run_id)
+            fields[name] = None if entry is None else entry.model_dump(mode='json', by_alias=True)
+    return per_turn
+
+
+def _detail_model(addons: Sequence[ConversationAddon]) -> type[ConversationDetail]:
+    """`ConversationDetail` with `turns[].addons` narrowed to one optional field per turn-field
+    add-on, for OpenAPI only. With none the static class is used as is, so an app without add-ons
+    sees the schema it had. The base classes keep the open mapping and still parse the narrowed body."""
+    turn_addons = _turn_field_addons(addons)
+    if not turn_addons:
+        return ConversationDetail
+    # `dict[str, Any]` before unpacking, as `_filter_params_model` does: pyright matches `**fields`
+    # against every named parameter of `create_model`, and a precise tuple type fails that.
+    fields: dict[str, Any] = {name: (addon.turn_model | None, None) for name, addon in turn_addons}
+    addons_out = create_model('TurnAddonsOut', **fields)
+    turn_out = create_model('TranscriptTurnOut', __base__=TranscriptTurnOut, addons=(addons_out, ...))
+    return create_model('ConversationDetail', __base__=ConversationDetail, turns=(list[turn_out], ...))
+
+
 def build_conversation_router(
     *,
     registry: ConversationRegistry,
@@ -295,6 +335,7 @@ def build_conversation_router(
     on_delete: Sequence[OnDeleteHook] = (),
     transcript_view: TranscriptView | None = None,
     ui_messages: UIMessageEncoder | None = None,
+    addons: Sequence[ConversationAddon] = (),
 ) -> APIRouter:
     """Build the `/conversations` router.
 
@@ -307,12 +348,16 @@ def build_conversation_router(
 
     `ui_messages` populates each turn's `ui_messages` field; without one the field stays `None`
     and every turn's content is carried once.
+
+    `addons` contribute per-turn data under `turns[].addons[name]`; see `ConversationAddon`.
     """
     _check_filterable_attrs(scope, filterable_attrs)
+    _check_addons(addons)
 
     router = APIRouter(prefix='/conversations', tags=['conversations'])
     scope_params = scope_extras_model(scope) or create_model('ScopeParams')
     filter_params = _filter_params_model(filterable_attrs)
+    detail_model = _detail_model(addons)
 
     @router.get('')
     async def list_conversations(
@@ -328,11 +373,11 @@ def build_conversation_router(
             rows = await registry.list(namespace, attrs=attrs or None, page_after=page_after, limit=page_size + 1)
         except RegistryUnavailable:
             _logger.warning('registry unavailable while listing conversations', exc_info=True)
-            raise _unavailable_503() from None
+            raise unavailable_503() from None
         more_after = rows[page_size - 1].conversation_id if len(rows) > page_size else None
         return ConversationList(data=[_to_out(m) for m in rows[:page_size]], more_after=more_after)
 
-    @router.get('/{conversation_id}')
+    @router.get('/{conversation_id}', response_model=detail_model)
     async def get_conversation(
         conversation_id: str,
         user: Annotated[HasUserId, Depends(auth)],
@@ -343,10 +388,16 @@ def build_conversation_router(
             meta = await registry.get(namespace, conversation_id)
         except RegistryUnavailable:
             _logger.warning('registry unavailable while fetching conversation %s', conversation_id, exc_info=True)
-            raise _unavailable_503() from None
+            raise unavailable_503() from None
         if meta is None:
-            raise _not_found_404()
+            raise not_found_404()
         transcript = await _fetch_transcript(registry, step_store, namespace, conversation_id, transcript_view)
+        addon_fields = await _load_addons(
+            addons,
+            AddonTurnQuery(
+                namespace_key=namespace, conversation_id=conversation_id, user=user, turns=tuple(transcript)
+            ),
+        )
         turns = [
             TranscriptTurnOut(
                 run_id=turn.run_id,
@@ -359,6 +410,7 @@ def build_conversation_router(
                 else TurnErrorOut(code=turn.error.code, message=turn.error.message, retryable=turn.error.transient),
                 messages=ModelMessagesTypeAdapter.dump_python(turn.messages, mode='json'),
                 ui_messages=_encode_ui(ui_messages, turn.messages),
+                addons=addon_fields[turn.run_id],
             )
             for turn in transcript
         ]
@@ -400,7 +452,7 @@ def build_conversation_router(
                 )
             except RegistryUnavailable:
                 _logger.warning('registry unavailable while creating a conversation', exc_info=True)
-                raise _unavailable_503() from None
+                raise unavailable_503() from None
             return _to_out(meta)
 
     if enable_title:
