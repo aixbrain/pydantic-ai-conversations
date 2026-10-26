@@ -5,6 +5,10 @@ import pydantic_ai_conversations as pkg
 
 def test_public_names() -> None:
     assert set(pkg.__all__) == {
+        'AddonCaller',
+        'AddonRouteGuard',
+        'AddonTurnQuery',
+        'ConversationAddon',
         'ConversationDetail',
         'ConversationList',
         'ConversationMeta',
@@ -27,8 +31,10 @@ def test_public_names() -> None:
         'StripRejectedDrafts',
         'SupportsConversationDeps',
         'SupportsPing',
+        'SupportsRouters',
         'SupportsRunDeletion',
         'SupportsTransientErrors',
+        'SupportsTurnFields',
         'TranscriptTurn',
         'TranscriptTurnOut',
         'TurnError',

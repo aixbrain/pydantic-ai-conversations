@@ -2,11 +2,12 @@
 
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Annotated, Any, cast
 
 import pytest
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.messages import (
     ModelMessage,
@@ -23,7 +24,9 @@ from pydantic_ai_app_factory import AppDeps, UserContext
 from pydantic_ai_harness.step_persistence import ContinuableSnapshot, InMemoryStepStore, RunRecord, StepPersistence
 
 from pydantic_ai_conversations import ConversationsCapability, load_transcript
-from pydantic_ai_conversations._routes import DeletionEvent, OnDeleteHook, build_conversation_router
+from pydantic_ai_conversations._loader import TranscriptTurn
+from pydantic_ai_conversations._routes import ConversationDetail, DeletionEvent, OnDeleteHook, build_conversation_router
+from pydantic_ai_conversations.addons import AddonCaller, AddonRouteGuard, AddonTurnQuery, ConversationAddon
 from pydantic_ai_conversations.errors import RegistryUnavailable
 from pydantic_ai_conversations.registry import (
     ConversationMeta,
@@ -120,6 +123,7 @@ def _client(
     on_delete: tuple[OnDeleteHook, ...] = (),
     transcript_view: Any = None,
     ui_messages: Any = None,
+    addons: tuple[ConversationAddon, ...] = (),
 ) -> TestClient:
     app = FastAPI()
     app.include_router(
@@ -134,6 +138,7 @@ def _client(
             on_delete=on_delete,
             transcript_view=transcript_view,
             ui_messages=ui_messages,
+            addons=addons,
         )
     )
     return TestClient(app, raise_server_exceptions=False)
@@ -599,8 +604,6 @@ async def test_transcript_view_shapes_the_wire_transcript() -> None:
     """A view wired via `build_conversation_router` shapes the turns before serialization."""
     from dataclasses import replace as dc_replace
 
-    from pydantic_ai_conversations._loader import TranscriptTurn
-
     registry, store = InMemoryConversationRegistry(), InMemoryStepStore()
     await _seed(registry, store)
 
@@ -807,3 +810,332 @@ async def test_raising_ui_encoder_fails_the_request() -> None:
     response = _client(registry, store, ui_messages=boom).get('/conversations/c1')
 
     assert response.status_code == 500
+
+
+# --- turn add-ons ---------------------------------------------------------------------------------
+
+
+class _FeedbackOut(BaseModel):
+    is_reported: bool
+    report_id: str | None = None
+
+
+class _FeedbackAddon:
+    """Keeps one entry per run id; what a feedback table joined on `run_id` looks like."""
+
+    name = 'feedback'
+    turn_model = _FeedbackOut
+
+    def __init__(self, entries: Mapping[str, _FeedbackOut] | None = None) -> None:
+        self.entries = dict(entries or {})
+        self.contexts: list[AddonTurnQuery] = []
+
+    async def load_turns(self, query: AddonTurnQuery) -> Mapping[str, BaseModel]:
+        self.contexts.append(query)
+        shown = {t.run_id for t in query.turns}
+        return {run_id: entry for run_id, entry in self.entries.items() if run_id in shown}
+
+
+async def test_addons_is_an_empty_mapping_without_add_ons() -> None:
+    """The key is always present so a client reads `turn.addons[name]` without a shape check."""
+    registry, store = InMemoryConversationRegistry(), InMemoryStepStore()
+    await _seed(registry, store)
+
+    response = _client(registry, store).get('/conversations/c1')
+
+    assert response.status_code == 200
+    assert response.json()['turns'][0]['addons'] == {}
+
+
+def test_addon_name_must_be_a_slug() -> None:
+    """The name becomes a field of a generated model, so it must be a valid identifier."""
+    addon = _FeedbackAddon()
+    addon.name = 'my-feedback'
+    with pytest.raises(ValueError, match='slug'):
+        _client(InMemoryConversationRegistry(), InMemoryStepStore(), addons=(addon,))
+
+
+def test_duplicate_addon_names_are_rejected_at_build_time() -> None:
+    with pytest.raises(ValueError, match='twice'):
+        _client(InMemoryConversationRegistry(), InMemoryStepStore(), addons=(_FeedbackAddon(), _FeedbackAddon()))
+
+
+async def test_addon_entries_arrive_under_the_addon_name_per_turn() -> None:
+    registry, store = InMemoryConversationRegistry(), InMemoryStepStore()
+    await _seed(registry, store)
+    addon = _FeedbackAddon({'c1-r1': _FeedbackOut(is_reported=True, report_id='rep-1')})
+
+    response = _client(registry, store, addons=(addon,)).get('/conversations/c1')
+
+    assert response.status_code == 200
+    assert response.json()['turns'][0]['addons'] == {'feedback': {'is_reported': True, 'report_id': 'rep-1'}}
+
+
+async def test_turn_without_an_entry_gets_null_under_the_addon_name() -> None:
+    """`null` is "no entry", distinct from a missing key, which would mean "add-on not configured"."""
+    registry, store = InMemoryConversationRegistry(), InMemoryStepStore()
+    await _seed(registry, store)
+
+    response = _client(registry, store, addons=(_FeedbackAddon(),)).get('/conversations/c1')
+
+    assert response.status_code == 200
+    assert response.json()['turns'][0]['addons'] == {'feedback': None}
+
+
+async def test_loader_gets_the_caller_namespace_and_the_shown_turns() -> None:
+    """The loader runs after `transcript_view`: a hidden turn is not in `query.turns`, so the add-on
+    does not query for it."""
+    registry, store = InMemoryConversationRegistry(), InMemoryStepStore()
+    namespace = await _seed(registry, store)
+    await store.register_run(RunRecord(run_id='c1-r2', conversation_id='c1'))
+    await store.save_snapshot(
+        ContinuableSnapshot(
+            run_id='c1-r2',
+            step_index=1,
+            messages=[ModelRequest(parts=[UserPromptPart(content='again')])],
+            conversation_id='c1',
+        )
+    )
+    addon = _FeedbackAddon()
+
+    def only_first(turns: list[TranscriptTurn]) -> list[TranscriptTurn]:
+        return [t for t in turns if t.run_id == 'c1-r1']
+
+    response = _client(registry, store, transcript_view=only_first, addons=(addon,)).get('/conversations/c1')
+
+    assert response.status_code == 200
+    (query,) = addon.contexts
+    assert query.namespace_key == namespace
+    assert query.conversation_id == 'c1'
+    assert query.user.user_id == 'alice'
+    assert [t.run_id for t in query.turns] == ['c1-r1']
+
+
+async def test_two_addons_each_get_their_own_key() -> None:
+    registry, store = InMemoryConversationRegistry(), InMemoryStepStore()
+    await _seed(registry, store)
+
+    class _NotesOut(BaseModel):
+        text: str
+
+    class _NotesAddon:
+        name = 'notes'
+        turn_model = _NotesOut
+
+        async def load_turns(self, query: AddonTurnQuery) -> Mapping[str, BaseModel]:
+            return {'c1-r1': _NotesOut(text='n')}
+
+    response = _client(registry, store, addons=(_FeedbackAddon(), _NotesAddon())).get('/conversations/c1')
+
+    assert response.json()['turns'][0]['addons'] == {'feedback': None, 'notes': {'text': 'n'}}
+
+
+async def test_a_raising_loader_fails_the_request() -> None:
+    """Degrading to `null` would be indistinguishable from "no entry"."""
+    registry, store = InMemoryConversationRegistry(), InMemoryStepStore()
+    await _seed(registry, store)
+
+    class _BrokenAddon:
+        name = 'broken'
+        turn_model = _FeedbackOut
+
+        async def load_turns(self, query: AddonTurnQuery) -> Mapping[str, BaseModel]:
+            raise RuntimeError('table missing')
+
+    response = _client(registry, store, addons=(_BrokenAddon(),)).get('/conversations/c1')
+
+    assert response.status_code == 500
+
+
+def test_openapi_types_each_addon_under_its_name() -> None:
+    """Consumers outside this repo read the schema, not our docs: the add-on's model appears as a
+    named component and `turns[].addons.<name>` references it."""
+    client = _client(InMemoryConversationRegistry(), InMemoryStepStore(), addons=(_FeedbackAddon(),))
+
+    schema = client.get('/openapi.json').json()
+
+    components = schema['components']['schemas']
+    assert components['_FeedbackOut']['properties']['is_reported']['type'] == 'boolean'
+    addons_props = components['TurnAddonsOut']['properties']
+    assert addons_props['feedback']['anyOf'] == [{'$ref': '#/components/schemas/_FeedbackOut'}, {'type': 'null'}]
+    turn_props = components['TranscriptTurnOut']['properties']
+    assert turn_props['addons'] == {'$ref': '#/components/schemas/TurnAddonsOut'}
+
+
+def test_openapi_without_addons_keeps_the_static_models() -> None:
+    """No add-on configured: no generated model, `addons` is the open mapping of the base class."""
+    client = _client(InMemoryConversationRegistry(), InMemoryStepStore())
+
+    components = client.get('/openapi.json').json()['components']['schemas']
+
+    assert 'TurnAddonsOut' not in components
+    assert components['TranscriptTurnOut']['properties']['addons']['type'] == 'object'
+
+
+async def test_base_detail_model_parses_a_response_with_addons() -> None:
+    """An app or test that imports `ConversationDetail` can still validate the narrowed response."""
+    registry, store = InMemoryConversationRegistry(), InMemoryStepStore()
+    await _seed(registry, store)
+    addon = _FeedbackAddon({'c1-r1': _FeedbackOut(is_reported=True)})
+
+    body = _client(registry, store, addons=(addon,)).get('/conversations/c1').json()
+
+    detail = ConversationDetail.model_validate(body)
+    assert _FeedbackOut.model_validate(detail.turns[0].addons['feedback']).is_reported is True
+
+
+# --- add-on model: name-only base, transient loaders, router context ---------------------------------
+
+
+class _NameOnlyAddon:
+    """An add-on that brings nothing to the detail read (routes only, say)."""
+
+    name = 'audit'
+
+
+async def test_an_add_on_without_turn_fields_gets_no_key() -> None:
+    """A key would promise data the add-on never provides."""
+    registry, store = InMemoryConversationRegistry(), InMemoryStepStore()
+    await _seed(registry, store)
+
+    client = _client(registry, store, addons=(_NameOnlyAddon(), _FeedbackAddon()))
+
+    assert client.get('/conversations/c1').json()['turns'][0]['addons'] == {'feedback': None}
+    components = client.get('/openapi.json').json()['components']['schemas']
+    assert list(components['TurnAddonsOut']['properties']) == ['feedback']
+
+
+def test_name_only_add_ons_still_need_a_slug_and_unique_names() -> None:
+    bad = _NameOnlyAddon()
+    bad.name = 'Audit'
+    with pytest.raises(ValueError, match='slug'):
+        _client(InMemoryConversationRegistry(), InMemoryStepStore(), addons=(bad,))
+    with pytest.raises(ValueError, match='twice'):
+        _client(InMemoryConversationRegistry(), InMemoryStepStore(), addons=(_NameOnlyAddon(), _NameOnlyAddon()))
+
+
+def test_only_name_only_add_ons_keep_the_static_detail_model() -> None:
+    client = _client(InMemoryConversationRegistry(), InMemoryStepStore(), addons=(_NameOnlyAddon(),))
+    assert 'TurnAddonsOut' not in client.get('/openapi.json').json()['components']['schemas']
+
+
+async def test_a_loader_failure_the_add_on_declares_temporary_is_503() -> None:
+    """The same retryable shape a store outage has; a client retries the read unchanged."""
+    registry, store = InMemoryConversationRegistry(), InMemoryStepStore()
+    await _seed(registry, store)
+
+    class _DownAddon:
+        name = 'down'
+        turn_model = _FeedbackOut
+        transient_errors = (ConnectionError,)
+
+        async def load_turns(self, query: AddonTurnQuery) -> Mapping[str, BaseModel]:
+            raise ConnectionError('pool exhausted')
+
+    response = _client(registry, store, addons=(_DownAddon(),)).get('/conversations/c1')
+
+    assert response.status_code == 503
+    assert response.json()['detail'] == {
+        'code': 'conversations/unavailable',
+        'message': 'Conversation storage is temporarily unavailable.',
+        'retryable': True,
+    }
+
+
+async def test_a_loader_failure_outside_the_declared_set_is_not_retryable() -> None:
+    registry, store = InMemoryConversationRegistry(), InMemoryStepStore()
+    await _seed(registry, store)
+
+    class _BuggyAddon:
+        name = 'buggy'
+        turn_model = _FeedbackOut
+        transient_errors = (ConnectionError,)
+
+        async def load_turns(self, query: AddonTurnQuery) -> Mapping[str, BaseModel]:
+            raise KeyError('missing column')
+
+    assert _client(registry, store, addons=(_BuggyAddon(),)).get('/conversations/c1').status_code == 500
+
+
+def _context(registry: ConversationRegistry) -> AddonRouteGuard:
+    return AddonRouteGuard(registry=registry, scope=SCOPE, auth=_auth)
+
+
+async def test_caller_dependency_resolves_user_and_namespace_behind_the_apps_auth() -> None:
+    registry = InMemoryConversationRegistry()
+    app = FastAPI()
+    guard = _context(registry)
+
+    @app.get('/whoami')
+    async def whoami(caller: Annotated[AddonCaller, Depends(guard.caller())]) -> dict[str, str]:
+        return {'user': caller.user.user_id, 'namespace': caller.namespace_key}
+
+    assert TestClient(app).get('/whoami').json() == {'user': 'alice', 'namespace': build_namespace(SCOPE, ALICE, {})}
+
+
+async def test_require_conversation_applies_the_namespace_wall() -> None:
+    registry, store = InMemoryConversationRegistry(), InMemoryStepStore()
+    namespace = await _seed(registry, store)
+    guard = _context(registry)
+
+    assert (await guard.require_conversation(namespace, 'c1')).conversation_id == 'c1'
+    with pytest.raises(HTTPException) as missing:
+        await guard.require_conversation(namespace, 'c9')
+    with pytest.raises(HTTPException) as foreign:
+        await guard.require_conversation('[["user.tenant_id","t2"]]', 'c1')
+    assert (missing.value.status_code, foreign.value.status_code) == (404, 404)
+    assert missing.value.detail == foreign.value.detail
+
+
+async def test_require_turn_resolves_a_turn_of_the_conversation_only() -> None:
+    registry, store = InMemoryConversationRegistry(), InMemoryStepStore()
+    namespace = await _seed(registry, store)
+    await registry.start_turn(namespace, 'c1', run_id='c1-r1', author_user_id='alice')
+    guard = _context(registry)
+
+    assert (await guard.require_turn(namespace, 'c1', 'c1-r1')).author_user_id == 'alice'
+    with pytest.raises(HTTPException) as unknown_run:
+        await guard.require_turn(namespace, 'c1', 'c2-r1')
+    with pytest.raises(HTTPException) as missing_conversation:
+        await guard.require_turn(namespace, 'c9', 'c1-r1')
+    assert (unknown_run.value.status_code, missing_conversation.value.status_code) == (404, 404)
+
+
+async def test_require_helpers_map_a_registry_outage_to_503() -> None:
+    with pytest.raises(HTTPException) as on_get:
+        await _context(_UnavailableGetRegistry()).require_conversation('ns', 'c1')
+    registry, store = _UnavailableListTurnsRegistry(), InMemoryStepStore()
+    namespace = await _seed(registry, store)
+    with pytest.raises(HTTPException) as on_turns:
+        await _context(registry).require_turn(namespace, 'c1', 'c1-r1')
+    assert (on_get.value.status_code, on_turns.value.status_code) == (503, 503)
+
+
+def test_context_exposes_the_packages_error_shapes() -> None:
+    guard = _context(InMemoryConversationRegistry())
+    not_found, unavailable = guard.not_found(), guard.unavailable()
+    assert (not_found.status_code, unavailable.status_code) == (404, 503)
+    assert cast(dict[str, Any], not_found.detail)['code'] == 'conversations/not-found'
+    assert cast(dict[str, Any], unavailable.detail)['retryable'] is True
+
+
+async def test_an_aliased_turn_model_round_trips_through_the_narrowed_response() -> None:
+    """The entry is dumped by alias, as `ui_messages` is: the narrowed response model validates
+    the wire shape by alias, so a field-name dump would fail validation on a camelCase model."""
+    registry, store = InMemoryConversationRegistry(), InMemoryStepStore()
+    await _seed(registry, store)
+
+    class _AliasedOut(BaseModel):
+        report_id: str = Field(alias='reportId')
+
+    class _AliasedAddon:
+        name = 'aliased'
+        turn_model = _AliasedOut
+
+        async def load_turns(self, query: AddonTurnQuery) -> Mapping[str, BaseModel]:
+            return {'c1-r1': _AliasedOut(reportId='rep-1')}
+
+    response = _client(registry, store, addons=(_AliasedAddon(),)).get('/conversations/c1')
+
+    assert response.status_code == 200
+    assert response.json()['turns'][0]['addons'] == {'aliased': {'reportId': 'rep-1'}}

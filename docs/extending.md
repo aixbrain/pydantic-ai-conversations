@@ -1,8 +1,8 @@
 # Extending
 
 This guide shows you the seams the feature leaves open: your own registry or step store,
-transforms on what is stored and shown, the stored failure reason, and use without the app
-factory.
+transforms on what is stored and shown, add-ons, the stored failure reason, and use without the
+app factory.
 
 Prerequisites: [How a conversation is stored](concepts.md). Signatures are in the
 [reference](api-reference.md).
@@ -169,6 +169,91 @@ adapter's `dump_messages` fits, wrapped in `functools.partial` to pin its SDK ve
 one the app streams. The feature calls it per turn and JSON-encodes the result; it never
 inspects the protocol. See [Rebuilding a chat frontend](http-api.md#rebuilding-a-chat-frontend).
 
+## Add-ons
+
+An add-on is composed into the feature through `addons=`. It has a name, and whichever of the
+optional capabilities it implements, each a protocol the feature detects with `isinstance`:
+`SupportsTurnFields` for per-turn data on the detail read, `SupportsRouters` for routes of
+its own. The name is the key under `addons`, what `config()` reports, and must be a unique slug.
+
+### Turn fields
+
+An add-on contributes per-turn data to `GET /conversations/{id}` from its own table. It
+declares one turn's entry as a pydantic model and loads the entries for a read in one query
+keyed by `run_id`:
+
+```python
+from collections.abc import Mapping
+
+from pydantic import BaseModel
+
+from pydantic_ai_conversations import AddonTurnQuery, ConversationsFeature
+
+
+class FeedbackOut(BaseModel):
+    rating: int
+    comment: str | None = None
+
+
+class FeedbackAddon:
+    name = 'feedback'
+    turn_model = FeedbackOut
+
+    def __init__(self, db: FeedbackTable) -> None:
+        self._db = db
+
+    async def load_turns(self, query: AddonTurnQuery) -> Mapping[str, BaseModel]:
+        rows = await self._db.by_run_ids(query.namespace_key, [t.run_id for t in query.turns])
+        return {row.run_id: FeedbackOut(rating=row.rating, comment=row.comment) for row in rows}
+
+
+feature = ConversationsFeature(registry=..., step_store=..., addons=[FeedbackAddon(db)])
+```
+
+The loader runs after `transcript_view`, over the turns the response shows, with the caller in
+`query.user` for entries that depend on who reads. A turn missing from the result is sent as
+`null`; a raising loader fails the request, because `null` already means "no entry". An add-on
+that declares `transient_errors` (as a step store does) gets those mapped to the retryable 503
+instead. Stored snapshots are never rewritten, so joining at read time is the way per-turn data
+reaches the transcript. The narrowed response models keep the base names in OpenAPI; a second
+conversation router in the same app gets module-qualified names for them.
+
+### Routes
+
+An add-on that implements `routers(guard)` gets its routers mounted behind the app's auth next to
+the conversation router. `guard` is an `AddonRouteGuard`: `guard.caller()` is a FastAPI
+dependency resolving the user and their namespace, and `guard.require_conversation` /
+`guard.require_turn`
+apply the namespace wall with the package's own 404 and 503, so an add-on does not rebuild it:
+
+```python
+from typing import Annotated
+
+from fastapi import APIRouter, Depends
+
+from pydantic_ai_conversations import AddonCaller, AddonRouteGuard
+
+
+class FeedbackAddon:  # the class from above, with routes
+    name = 'feedback'
+    turn_model = FeedbackOut
+
+    def routers(self, guard: AddonRouteGuard) -> list[APIRouter]:
+        router = APIRouter(prefix='/conversations')
+
+        @router.put('/{conversation_id}/turns/{run_id}/feedback', status_code=204)
+        async def rate(
+            conversation_id: str,
+            run_id: str,
+            body: FeedbackOut,
+            caller: Annotated[AddonCaller, Depends(guard.caller())],
+        ) -> None:
+            turn = await guard.require_turn(caller.namespace_key, conversation_id, run_id)
+            await self._db.put(caller.namespace_key, conversation_id, turn.run_id, caller.user.user_id, body)
+
+        return [router]
+```
+
 ## Storing why a turn failed
 
 `describe_failure` maps a run's exception to the `TurnError` stored on its turn. The mapper
@@ -233,4 +318,4 @@ temporary failure; a standalone app needs a handler for it, while the routes rai
 `HTTPException` and need none.
 
 What you end up with: a backend the conformance suite accepts, and the stored and shown
-content shaped at the two places meant for it. Going deeper: [Testing](testing.md).
+content shaped at the places meant for it. Going deeper: [Testing](testing.md).

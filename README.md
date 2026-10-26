@@ -92,7 +92,7 @@ the rest.
 1. [Backends](https://github.com/aixbrain/pydantic-ai-conversations/blob/main/docs/backends.md):
    SQLite, MongoDB, PostgreSQL, schema and upgrades.
 1. [Extending](https://github.com/aixbrain/pydantic-ai-conversations/blob/main/docs/extending.md):
-   your own registry or store, transforms, use without the app factory.
+   your own registry or store, transforms, add-ons, use without the app factory.
 1. [Operations](https://github.com/aixbrain/pydantic-ai-conversations/blob/main/docs/operations.md):
    readiness, concurrency, logging, limits, version pins.
 1. [Testing](https://github.com/aixbrain/pydantic-ai-conversations/blob/main/docs/testing.md):

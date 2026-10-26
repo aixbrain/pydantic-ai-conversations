@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import json
 import keyword
-from collections.abc import Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal, Protocol
+from typing import Annotated, Any, Literal, Protocol, TypeAlias
 
 from pydantic import BaseModel, Field, create_model
 
@@ -97,3 +97,8 @@ def scope_extras_model(scope: tuple[ScopeField, ...]) -> type[BaseModel] | None:
     """
     fields: dict[str, Any] = {f.name: (Annotated[str, Field(min_length=1)], ...) for f in scope if f.source == 'extras'}
     return create_model('ScopeExtras', **fields) if fields else None
+
+
+UserDependency: TypeAlias = Callable[..., HasUserId | Awaitable[HasUserId]]
+"""Any FastAPI dependency resolving the request to an object with the user-side scope attributes.
+The app-factory's `AuthProvider` satisfies this."""

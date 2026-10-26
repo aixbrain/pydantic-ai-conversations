@@ -26,6 +26,7 @@ from pydantic_ai_conversations._routes import (
     UIMessageEncoder,
     build_conversation_router,
 )
+from pydantic_ai_conversations.addons import AddonRouteGuard, ConversationAddon, SupportsRouters
 from pydantic_ai_conversations.registry import ConversationRegistry
 from pydantic_ai_conversations.scope import (
     HasUserId,
@@ -52,7 +53,8 @@ class ConversationsFeature(Feature):
     The routes take the app's auth provider from `routers(auth=...)`, so the namespace and the
     access decision derive from the one identity the app guards with. `attrs` are create-time-only;
     the implicit create path sets them by pre-registering the entry before the first run
-    (docs/http-api.md).
+    (docs/http-api.md). Add-ons passed as `addons` contribute per-turn data to the detail read
+    and routes of their own; see `ConversationAddon` and the `Supports*` protocols next to it.
     """
 
     name = 'conversations'
@@ -72,6 +74,7 @@ class ConversationsFeature(Feature):
         ui_messages: UIMessageEncoder | None = None,
         max_history_runs: int | None = None,
         describe_failure: FailureDescriber | None = None,
+        addons: Sequence[ConversationAddon] = (),
     ) -> None:
         self._registry = registry
         self._step_store = step_store
@@ -85,6 +88,7 @@ class ConversationsFeature(Feature):
         self._ui_messages = ui_messages
         self._max_history_runs = max_history_runs
         self._describe_failure = describe_failure
+        self._addons = tuple(addons)
         # One recipe for the chat body AND the route query params: the scope fields cannot drift.
         # The chat body additionally carries `previous_run_id`, which no route takes.
         self._scope_extras_type = scope_extras_model(self._scope)
@@ -117,7 +121,7 @@ class ConversationsFeature(Feature):
         ]
 
     def routers(self, *, auth: AuthProvider) -> list[APIRouter]:
-        return [
+        routers = [
             build_conversation_router(
                 registry=self._registry,
                 step_store=self._step_store,
@@ -129,8 +133,14 @@ class ConversationsFeature(Feature):
                 on_delete=self._on_delete,
                 transcript_view=self._transcript_view,
                 ui_messages=self._ui_messages,
+                addons=self._addons,
             )
         ]
+        guard = AddonRouteGuard(registry=self._registry, scope=self._scope, auth=auth)
+        for addon in self._addons:
+            if isinstance(addon, SupportsRouters):
+                routers.extend(addon.routers(guard))
+        return routers
 
     def lifespan(self, app: FastAPI) -> AbstractAsyncContextManager[None]:
         @asynccontextmanager
@@ -165,6 +175,8 @@ class ConversationsFeature(Feature):
             # UI protocol it encodes. A client only needs to know whether `ui_messages` will be null.
             'ui_messages': self._ui_messages is not None,
             'filterable_attrs': list(self._filterable_attrs),
+            # Every add-on by name, with room under each for the add-on's own switches.
+            'addons': {addon.name: {} for addon in self._addons},
         }
 
     def namespace_for(self, user: HasUserId, extras: Mapping[str, Any] = _EMPTY) -> str:
