@@ -23,8 +23,9 @@ public. A `ping` that raises marks the app not ready. Every shipped `ping` runs 
 against the database, so an outage after startup shows.
 
 `/config/features` requires auth and reports the switches a client branches on:
-`create_route`, `title_route`, `ui_messages` (whether an encoder is wired), and
-`filterable_attrs`. Scope, history limits, and hooks are not reported.
+`create_route`, `title_route`, `ui_messages` (whether an encoder is wired), `filterable_attrs`,
+and `addons` (the configured add-ons by name, each mapping to its own switches). Scope, history
+limits, and hooks are not reported.
 
 ## Concurrency
 

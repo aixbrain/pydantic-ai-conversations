@@ -73,7 +73,10 @@ position while the client paged. That is accepted; the same rule holds on every 
   ([Extending](extending.md#storing-why-a-turn-failed)); then `code`, `message`, `retryable`;
 - `messages`, the turn's stored messages in pydantic-ai's JSON form;
 - `ui_messages`, the same messages in the app's UI protocol, `null` unless the feature was
-  built with an encoder.
+  built with an encoder;
+- `addons`, per-turn data from the feature's add-ons keyed by add-on name, `{}` with none
+  configured; a name maps to `null` when its add-on has no entry for the turn, and an add-on
+  without turn fields has no key.
 
 `messages` on the detail is the branch ending in the latest turn, flattened: the latest turn
 and its ancestors, in order. It is a compatibility field for callers that want one list; it
@@ -110,6 +113,14 @@ carries the protocol's camelCase aliases, `toolCallId` for example.
 
 A `transcript_view` sees every resolved turn and returns the turns to show, for example hiding
 a failed attempt once a sibling answered. See [Extending](extending.md#transcript-views).
+
+### Per-turn data from add-ons
+
+An add-on joins its own records to the transcript by `run_id` and the detail shows them under
+`turns[].addons.<name>`, typed per add-on in the OpenAPI schema. `GET /config/features` lists
+every configured add-on under `addons`, whether or not it has turn fields. A turn streamed in
+the current session carries no add-on data until the client fetches the detail again. See
+[Extending](extending.md#add-ons).
 
 ## Deleting
 

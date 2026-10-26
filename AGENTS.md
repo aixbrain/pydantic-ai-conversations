@@ -8,15 +8,16 @@ Conversation persistence as a `pydantic-ai-app-factory` feature: per-turn messag
 ## Module layout
 
 Public modules are the API: `feature.py`, `registry.py`, `scope.py`, `errors.py`,
-`testing.py`, `stores.py`, and the `sqlite/`, `mongo/`, and `postgres/` backend packages.
+`testing.py`, `stores.py`, `addons.py` (the add-on contract), and the `sqlite/`, `mongo/`, and
+`postgres/` backend packages.
 Every other module is a private implementation detail and underscore-prefixed; nothing outside
 this package may import one -- inside `sqlite/`, `mongo/`, and `postgres/` the same rule applies to
 their own modules (`_driver.py`, `_registry.py`, and `_store.py`, plus `_schema.py` in
 `postgres/`, which ships the registry's DDL), whose names reach users only through
 `pydantic_ai_conversations.sqlite`, `.mongo`, and `.postgres` respectively. Some public
 names -- `ConversationsCapability`, `build_conversation_router`,
-the wire models (`ConversationDetail`/`ConversationList`/`ConversationOut`), and hook/alias types
-(`OnDeleteHook`, `UserDependency`) -- are implemented in private modules (`_capability.py`,
+the wire models (`ConversationDetail`/`ConversationList`/`ConversationOut`), and the delete hook
+types (`DeletionEvent`, `OnDeleteHook`) -- are implemented in private modules (`_capability.py`,
 `_routes.py`) and re-exported from `__init__.py`; the package root, not the module a name happens to
 live in, is the supported import surface.
 

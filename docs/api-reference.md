@@ -22,6 +22,7 @@ ConversationsFeature(
     ui_messages: UIMessageEncoder | None = None,
     max_history_runs: int | None = None,
     describe_failure: FailureDescriber | None = None,
+    addons: Sequence[ConversationAddon] = (),
 )
 ```
 
@@ -39,6 +40,7 @@ ConversationsFeature(
 | `ui_messages` | Encoder for `TranscriptTurnOut.ui_messages` |
 | `max_history_runs` | Caps the turns loaded per run; `<= 0` raises `ValueError` when the app is built |
 | `describe_failure` | Maps a failed run's exception to the stored `TurnError` |
+| `addons` | Add-ons: `SupportsTurnFields` ones fill `TranscriptTurnOut.addons`, `SupportsRouters` ones mount routes; a duplicate or non-slug name raises `ValueError` when the app is built |
 
 Members: `name = 'conversations'`; `extras_type`, a pydantic model with `previous_run_id` plus
 one required field per `extras.*` scope entry; `capabilities()`, `routers(auth=)`,
@@ -46,7 +48,7 @@ one required field per `extras.*` scope entry; `capabilities()`, `routers(auth=)
 `namespace_for(user, extras={})`; `async purge(*, namespace_key, conversation_id)`.
 
 `config()` returns `{'create_route': bool, 'title_route': bool, 'ui_messages': bool,
-'filterable_attrs': list[str]}`.
+'filterable_attrs': list[str], 'addons': {name: {}}}`.
 
 ## `ConversationsCapability`
 
@@ -79,6 +81,7 @@ build_conversation_router(
     on_delete: Sequence[OnDeleteHook] = (),
     transcript_view: TranscriptView | None = None,
     ui_messages: UIMessageEncoder | None = None,
+    addons: Sequence[ConversationAddon] = (),
 ) -> APIRouter
 ```
 
@@ -107,8 +110,9 @@ ConversationOut      {conversation_id, title: str | null, created_by, created_at
 ConversationList     {data: [ConversationOut], more_after: str | null}
 ConversationDetail   {conversation: ConversationOut, turns: [TranscriptTurnOut], messages: [ModelMessage]}
 TranscriptTurnOut    {run_id, started_at, phase: 'started' | 'answered' | 'failed', previous_run_id: str | null,
-                      author_user_id: str | null, error: TurnErrorOut | null, messages: [ModelMessage], ui_messages: [any] | null}
-                     (`error` and `ui_messages` are always present, `null` when unset)
+                      author_user_id: str | null, error: TurnErrorOut | null, messages: [ModelMessage], ui_messages: [any] | null,
+                      addons: {name: object | null}}
+                     (`error`, `ui_messages` and `addons` are always present; `addons` is `{}` without add-ons)
 TurnErrorOut         {code, message, retryable: bool}
 ```
 
@@ -249,6 +253,16 @@ class TranscriptTurn:
 
 TranscriptView = Callable[[list[TranscriptTurn]], list[TranscriptTurn]]
 UIMessageEncoder = Callable[[Sequence[ModelMessage]], Sequence[Any]]
+AddonTurnQuery(namespace_key, conversation_id, user: HasUserId, turns: Sequence[TranscriptTurn])
+ConversationAddon   Protocol: name: str (read-only)
+SupportsTurnFields  Protocol (runtime_checkable): turn_model: type[BaseModel] (read-only),
+                    async load_turns(query: AddonTurnQuery, /) -> Mapping[run_id, BaseModel]
+SupportsRouters Protocol (runtime_checkable): routers(guard: AddonRouteGuard, /) -> Sequence[APIRouter]
+AddonCaller(user: HasUserId, namespace_key: str)
+AddonRouteGuard(registry, scope, auth): caller() -> FastAPI dependency yielding AddonCaller,
+                    async require_conversation(namespace_key, conversation_id) -> ConversationMeta,
+                    async require_turn(namespace_key, conversation_id, run_id) -> TurnRecord,
+                    not_found() / unavailable() -> HTTPException
 FailureDescriber = Callable[[BaseException], TurnError | None]
 UserDependency = Callable[..., HasUserId | Awaitable[HasUserId]]
 
@@ -311,7 +325,8 @@ From `pydantic_ai_conversations`: `ConversationsFeature`, `ConversationsCapabili
 `SupportsConversationDeps`, `FailureDescriber`, `agent_error_mapper`, `StripRejectedDrafts`,
 `strip_rejected_drafts`, `rejected_draft_pairs`, `TranscriptTurn`, `TranscriptView`,
 `load_transcript`, `build_conversation_router`, `ConversationDetail`, `ConversationList`,
-`ConversationOut`, `TranscriptTurnOut`, `TurnErrorOut`, `DeletionEvent`, `DeletionKind`,
+`ConversationOut`, `TranscriptTurnOut`, `TurnErrorOut`, `ConversationAddon`, `SupportsTurnFields`,
+`SupportsRouters`, `AddonTurnQuery`, `AddonRouteGuard`, `AddonCaller`, `DeletionEvent`, `DeletionKind`,
 `OnDeleteHook`, `UIMessageEncoder`, `UserDependency`, `ConversationNotFound`,
 `RegistryUnavailable`, `ConversationMeta`, `ConversationRegistry`,
 `InMemoryConversationRegistry`, `RunPhase`, `TurnError`, `TurnRecord`, `HasUserId`,
