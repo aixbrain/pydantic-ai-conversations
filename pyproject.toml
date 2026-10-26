@@ -103,6 +103,7 @@ include = [
     "docs/continuing-a-conversation.md",
     "docs/deleting.md",
     "docs/extending.md",
+    "docs/feedback.md",
     "docs/getting-started.md",
     "docs/http-api.md",
     "docs/operations.md",

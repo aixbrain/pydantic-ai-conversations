@@ -45,6 +45,8 @@ replicas need MongoDB or PostgreSQL.
 snapshot of each run, so pruning does not affect it. `media_store` and `media_threshold_bytes`
 pass through to the harness store unchanged. The store keeps one connection of its own open for
 `delete_runs` and `ping`; `close()` releases it on shutdown, and a later call reopens it.
+`SqliteTurnFeedbackStore('app.db')` puts the [feedback add-on](feedback.md)'s table in the same
+file.
 
 ## MongoDB
 
@@ -69,7 +71,9 @@ The registry uses the `conversations` and `turns` collections and creates its in
 `open()` or first use. `MongoConversationStepStore` passes `media_store`,
 `media_threshold_bytes`, and `max_snapshots_per_run` through to the harness store unchanged.
 Timestamps come back in UTC whether or not the client is `tz_aware`; MongoDB stores
-milliseconds.
+milliseconds. `MongoTurnFeedbackStore(client=client, database='chat')` puts the
+[feedback add-on](feedback.md)'s collection in the same database, with the same ownership rule
+for the client.
 
 ## PostgreSQL
 
@@ -106,6 +110,8 @@ DDL below. `table` is a prefix for their names (`step_persistence_runs`, ... by 
 cannot name a schema, so they land in the pool's search path; the `search_path` setting above
 puts them in `chat` beside the registry's. `media_store`, `media_threshold_bytes`, and
 `max_snapshots_per_run` pass through to the harness store unchanged.
+`PostgresTurnFeedbackStore(pool=pool, schema='chat')` takes the registry's pool and schema for
+the [feedback add-on](feedback.md)'s table.
 
 ### Schema and upgrades
 
@@ -130,7 +136,9 @@ grants.
 `create_schema=True` on the constructor, or `create_schema(pool, schema=...)`, applies the DDL
 at startup. Both exist for tests and local development: production deployments usually apply
 schema in an ordered step before the app starts, the app's database user often lacks DDL
-rights, and replicas racing `CREATE TABLE` can deadlock in the catalog.
+rights, and replicas racing `CREATE TABLE` can deadlock in the catalog. The feedback add-on's
+DDL is a separate file, `FEEDBACK_SCHEMA_SQL` from `feedback.sql`, applied the same way, with
+`create_feedback_schema` as its test-time shortcut.
 
 ## Choosing
 

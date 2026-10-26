@@ -74,8 +74,10 @@ async def drop_attachments(event: DeletionEvent) -> None:
 feature = ConversationsFeature(registry=..., step_store=..., on_delete=[drop_attachments])
 ```
 
-On soft delete the hooks run after the mark is written and before the 204 returns; a failing
-hook is logged and does not fail the response. On purge a failing hook does not stop the
+Add-ons that implement `SupportsDeletion` run here too, after the app's hooks; the
+[turn feedback add-on](feedback.md) deletes its entries on purge and keeps them through a soft
+delete. On soft delete the hooks run after the mark is written and before the 204 returns; a
+failing hook is logged and does not fail the response. On purge a failing hook does not stop the
 others, and the failures are raised together as one `ExceptionGroup` after all have run, so a
 caller erasing personal data learns the erasure is incomplete and retries. Hooks must be
 idempotent for that reason. `event.meta` is `None` on a purge of an entry that was already
