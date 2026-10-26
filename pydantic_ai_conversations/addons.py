@@ -23,6 +23,7 @@ from typing import Annotated, Any, Protocol, runtime_checkable
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, create_model
 
+from pydantic_ai_conversations._hooks import DeletionEvent
 from pydantic_ai_conversations._http import not_found_404, unavailable_503
 from pydantic_ai_conversations._loader import TranscriptTurn
 from pydantic_ai_conversations.errors import RegistryUnavailable
@@ -40,7 +41,8 @@ _logger = logging.getLogger(__name__)
 
 class ConversationAddon(Protocol):
     """Something composed into the feature through `addons=`: a name, plus whichever of the
-    optional capabilities it implements (`SupportsTurnFields`, `SupportsRouters`)."""
+    optional capabilities it implements (`SupportsTurnFields`, `SupportsRouters`, `SupportsLifespan`,
+    `SupportsDeletion`)."""
 
     # A read-only property, not an attribute: a mutable protocol attribute is invariant under
     # pyright, so a class attribute would not satisfy a wider declared type.
@@ -161,3 +163,22 @@ class SupportsRouters(Protocol):
     """An add-on that mounts routes of its own next to the conversation router, behind the same auth."""
 
     def routers(self, guard: AddonRouteGuard, /) -> Sequence[APIRouter]: ...  # pragma: no cover
+
+
+@runtime_checkable
+class SupportsDeletion(Protocol):
+    """An add-on whose rows follow the conversation. Runs as one more `on_delete` hook, after the
+    app's own, with the same event and the same failure rules (purge raises them together,
+    soft delete logs them)."""
+
+    async def on_delete(self, event: DeletionEvent) -> None: ...  # pragma: no cover
+
+
+@runtime_checkable
+class SupportsLifespan(Protocol):
+    """An add-on with a store to open at startup and close at shutdown. Opened after the registry
+    and closed before it, so an add-on may consult the registry while it is open."""
+
+    async def open(self) -> None: ...  # pragma: no cover
+
+    async def close(self) -> None: ...  # pragma: no cover

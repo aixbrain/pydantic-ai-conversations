@@ -30,6 +30,8 @@ def test_public_names() -> None:
         'SnapshotPreparer',
         'StripRejectedDrafts',
         'SupportsConversationDeps',
+        'SupportsDeletion',
+        'SupportsLifespan',
         'SupportsPing',
         'SupportsRouters',
         'SupportsRunDeletion',

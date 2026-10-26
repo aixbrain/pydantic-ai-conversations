@@ -17,10 +17,9 @@ standalone mount has to pass it by hand.
 
 import logging
 import re
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Any, TypeAlias
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Query
@@ -29,6 +28,7 @@ from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
 from pydantic_ai_harness.step_persistence import StepStore
 from pydantic_core import to_jsonable_python
 
+from pydantic_ai_conversations._hooks import DeletionEvent, OnDeleteHook
 from pydantic_ai_conversations._http import not_found_404, unavailable_503
 from pydantic_ai_conversations._loader import TranscriptTurn, TranscriptView, load_transcript, path_messages
 from pydantic_ai_conversations._transient import is_transient
@@ -36,25 +36,6 @@ from pydantic_ai_conversations.addons import AddonTurnQuery, ConversationAddon, 
 from pydantic_ai_conversations.errors import ConversationNotFound, RegistryUnavailable
 from pydantic_ai_conversations.registry import ConversationMeta, ConversationRegistry, RunPhase
 from pydantic_ai_conversations.scope import HasUserId, ScopeField, UserDependency, build_namespace, scope_extras_model
-
-DeletionKind: TypeAlias = Literal['soft_delete', 'purge']
-"""Which deletion path invoked a cleanup hook."""
-
-
-@dataclass(frozen=True)
-class DeletionEvent:
-    """What a cleanup hook is told about a deletion."""
-
-    namespace_key: str
-    conversation_id: str
-    kind: DeletionKind
-    meta: ConversationMeta | None
-    """The entry as it was, or `None` when purging one that was already soft-deleted or purged
-    (a retried purge) -- the registry's `get` hides both by contract, so the purge path cannot
-    recover it."""
-
-
-OnDeleteHook: TypeAlias = Callable[[DeletionEvent], Awaitable[None]]
 
 UIMessageEncoder: TypeAlias = Callable[[Sequence[ModelMessage]], Sequence[Any]]
 """Renders a turn's messages into the app's UI protocol for `TranscriptTurnOut.ui_messages`.
