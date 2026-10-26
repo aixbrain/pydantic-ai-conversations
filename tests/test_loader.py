@@ -7,7 +7,8 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
-    RetryPromptPart,
+    RetryFeedbackPart,
+    RetryInfo,
     TextPart,
     ToolCallPart,
     ToolReturnPart,
@@ -324,11 +325,10 @@ def test_drop_orphaned_leading_tool_results_noop_when_nothing_is_orphaned() -> N
     assert _drop_orphaned_leading_tool_results(messages) is messages
 
 
-def test_drop_orphaned_leading_tool_results_ignores_a_non_tool_retry_prompt() -> None:
-    # `RetryPromptPart.tool_name` is `None` for a plain output-validation retry -- it answers no
-    # tool call at all, and its (randomly generated) `tool_call_id` must not be mistaken for one.
+def test_drop_orphaned_leading_tool_results_ignores_retry_feedback() -> None:
+    # A plain output-validation retry answers no tool call at all, so it is never an orphan.
     messages: list[ModelMessage] = [
-        ModelRequest(parts=[RetryPromptPart(content='invalid output', tool_call_id='not-a-real-call')]),
+        ModelRequest(parts=[RetryFeedbackPart(content='invalid output', retry=RetryInfo(cause='validation_error'))]),
         ModelResponse(parts=[TextPart(content='retry')]),
     ]
     assert _drop_orphaned_leading_tool_results(messages) is messages
@@ -353,7 +353,7 @@ def test_drop_orphaned_leading_tool_results_strips_only_the_orphaned_part() -> N
 def test_drop_orphaned_leading_tool_results_strips_an_orphaned_tool_retry() -> None:
     tail_response = ModelResponse(parts=[TextPart(content='done')])
     messages: list[ModelMessage] = [
-        ModelRequest(parts=[RetryPromptPart(content='bad args', tool_name='t', tool_call_id='gone')]),
+        ModelRequest(parts=[ToolReturnPart(tool_name='t', content='bad args', tool_call_id='gone', outcome='retried')]),
         tail_response,
     ]
     assert _drop_orphaned_leading_tool_results(messages) == [tail_response]

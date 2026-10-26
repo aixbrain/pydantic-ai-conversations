@@ -111,7 +111,7 @@ for that.
 
 ## Rejected drafts
 
-pydantic-ai's output-validator retry leaves each rejected draft and its retry prompt in the
+pydantic-ai's output-validator retry leaves each rejected draft and its retry feedback in the
 history, so a later turn would send them to the model again. `StripRejectedDrafts`, registered
 on the agent beside the feature's capabilities, removes them from the model request only. Run
 state and stored snapshots keep them, so transcripts still show what happened, and the current
@@ -127,7 +127,7 @@ agent = Agent('test', deps_type=AppDeps, capabilities=[StripRejectedDrafts()])
 
 Two limits. Only text-path rejections are recognised; a rejection in `ToolOutput` mode looks
 like a function tool's retry and is left alone. And when retries are exhausted, pydantic-ai
-raises before appending the last retry prompt, so that final draft carries no marker and
+raises before appending the last retry feedback, so that final draft carries no marker and
 stays.
 
 What you end up with: a client that names the turn it continues from, retries and edits by

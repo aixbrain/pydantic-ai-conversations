@@ -134,7 +134,7 @@ feature = ConversationsFeature(registry=..., step_store=..., snapshot_preparers=
 
 A preparer must be idempotent, key any per-run state by `run_id`, and rebuild messages with
 `replace(message, parts=...)` so the `run_id` each message carries survives. It must never
-remove the run's own user prompt, tool returns, or retry prompts that answer a tool call,
+remove the run's own user prompt or tool returns, retried ones included,
 since the next turn is loaded from what it leaves behind. The same holds for parts a provider needs intact on resume, such as thinking
 blocks beside a tool call. A snapshot emptied by the chain is not saved at all.
 
