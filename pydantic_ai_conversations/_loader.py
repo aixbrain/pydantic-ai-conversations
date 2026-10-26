@@ -25,7 +25,6 @@ from pydantic_ai.messages import (
     ModelRequest,
     ModelRequestPart,
     ModelResponse,
-    RetryPromptPart,
     ToolCallPart,
     ToolReturnPart,
 )
@@ -82,15 +81,10 @@ async def load_conversation(
 def _is_orphaned_tool_result(part: ModelRequestPart, call_ids: set[str]) -> bool:
     """Whether `part` answers some `ToolCallPart` missing from `call_ids` -- i.e. cut away.
 
-    `ToolReturnPart.tool_call_id` always names a real preceding call. `RetryPromptPart` answers a
-    call only when `tool_name` is set: a text-validation retry carries a generated placeholder
-    `tool_call_id` that never appears in any `ToolCallPart` and must not be read as an orphan.
+    `ToolReturnPart.tool_call_id` always names a real preceding call, for a retried return as much
+    as a settled one. A `RetryFeedbackPart` answers no call and carries no `tool_call_id`.
     """
-    if isinstance(part, ToolReturnPart):
-        return part.tool_call_id not in call_ids
-    if isinstance(part, RetryPromptPart) and part.tool_name is not None:
-        return part.tool_call_id not in call_ids
-    return False
+    return isinstance(part, ToolReturnPart) and part.tool_call_id not in call_ids
 
 
 def _drop_orphaned_leading_tool_results(messages: list[ModelMessage]) -> list[ModelMessage]:

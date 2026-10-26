@@ -6,7 +6,8 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
-    RetryPromptPart,
+    RetryFeedbackPart,
+    RetryInfo,
     TextPart,
     UserPromptPart,
 )
@@ -27,6 +28,7 @@ from pydantic_ai_conversations import (
     StripRejectedDrafts,
 )
 from pydantic_ai_conversations.scope import build_namespace, parse_scope
+from tests.sql_stack import is_retry_feedback
 
 SCOPE = parse_scope(('user.tenant_id', 'user.user_id'))
 
@@ -48,7 +50,7 @@ def _agent(
     def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         seen.append(list(messages))
         last = messages[-1]
-        retrying = isinstance(last, ModelRequest) and any(isinstance(part, RetryPromptPart) for part in last.parts)
+        retrying = isinstance(last, ModelRequest) and any(is_retry_feedback(part) for part in last.parts)
         return ModelResponse(parts=[TextPart(content='final' if retrying or not reject_drafts else 'draft')])
 
     agent = Agent(
@@ -92,7 +94,7 @@ async def test_a_stored_pair_is_filtered_out_of_the_next_turn() -> None:
             messages=[
                 ModelRequest(parts=[UserPromptPart(content='old q')]),
                 ModelResponse(parts=[TextPart(content='rejected draft')]),
-                ModelRequest(parts=[RetryPromptPart(content='scold')]),
+                ModelRequest(parts=[RetryFeedbackPart(content='scold', retry=RetryInfo(cause='model_retry'))]),
                 ModelResponse(parts=[TextPart(content='real answer')]),
             ],
         )
@@ -124,7 +126,7 @@ async def test_the_live_runs_own_pair_stays_and_the_retry_succeeds() -> None:
     # Turn 2's retry request: turn 1 appears without its draft, turn 2's own draft is still there.
     assert _texts(seen[3]) == ['final', 'draft']
     assert isinstance(seen[3][-1], ModelRequest)
-    assert any(isinstance(part, RetryPromptPart) for part in seen[3][-1].parts)
+    assert any(is_retry_feedback(part) for part in seen[3][-1].parts)
 
 
 async def test_stored_snapshots_keep_the_drafts() -> None:

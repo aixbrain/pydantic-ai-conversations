@@ -4,13 +4,13 @@ pydantic-ai gives a tool four distinct ways to end badly, and they end the RUN d
 
 | Tool raises | Model sees | Run outcome | Registry phase |
 |---|---|---|---|
-| `ModelRetry` (budget left) | `RetryPromptPart(tool_name=...)`, calls again | answer | `answered` |
+| `ModelRetry` (budget left) | `ToolReturnPart(outcome='retried')`, calls again | answer | `answered` |
 | `ModelRetry` (budget spent) | -- | `UnexpectedModelBehavior` | `failed` |
 | `ToolFailed` | the failure as a tool return, adapts | answer | `answered` |
 | a plain exception | -- | the exception | `failed` |
 
-Schema-invalid arguments travel the same channel as `ModelRetry`: a `RetryPromptPart` naming the
-tool, which the model answers with corrected arguments.
+Schema-invalid arguments travel the same channel as `ModelRetry`: a retried `ToolReturnPart` for
+the call, which the model answers with corrected arguments.
 
 What this suite pins is not that pydantic-ai implements those (upstream's job) but what the
 conversation feature does WITH them: the recovery trail is part of the run's own batch, so it is
@@ -32,7 +32,6 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
-    RetryPromptPart,
     TextPart,
     ToolCallPart,
     ToolReturnPart,
@@ -42,7 +41,7 @@ from pydantic_ai_app_factory import AppDeps
 from pydantic_ai_harness.step_persistence import ContinuableSnapshot
 
 from pydantic_ai_conversations import ConversationsFeature, StripRejectedDrafts, TranscriptTurn
-from tests.sql_stack import Backends, SqlStack, last_user_prompt, part_kinds, sql_stack
+from tests.sql_stack import Backends, SqlStack, is_retry_feedback, last_user_prompt, part_kinds, sql_stack
 
 SECRET = 'serial-4711'
 """Planted in every tool return so the write seam has something real to redact."""
@@ -70,7 +69,7 @@ class RecoveryFaults:
     reject_first_draft: bool = False
     """Have the output validator reject the run's first answer once."""
     send_bad_arguments_once: bool = False
-    """Emit a schema-invalid tool call once, so validation produces the retry prompt."""
+    """Emit a schema-invalid tool call once, so validation produces the retried return."""
     fail_after_tool_boundary: bool = False
     """Crash the model once a tool round has settled -- `complete` snapshot, failed run."""
     counters: Counters = field(default_factory=Counters)
@@ -90,20 +89,20 @@ def _has(parts: Any, kind: type, **attrs: Any) -> bool:
 def _tool_retry_pending(messages: list[ModelMessage]) -> bool:
     """Whether the newest request asks the model to redo a TOOL call (schema or `ModelRetry`)."""
     last = messages[-1]
-    return isinstance(last, ModelRequest) and any(
-        isinstance(part, RetryPromptPart) and part.tool_name is not None for part in last.parts
-    )
+    return isinstance(last, ModelRequest) and _has(last.parts, ToolReturnPart, outcome='retried')
 
 
 def _draft_rejected(messages: list[ModelMessage]) -> bool:
-    """Whether the newest request is an output-validator rejection (`tool_name is None`)."""
+    """Whether the newest request is an output-validator rejection (feedback bound to no call)."""
     last = messages[-1]
-    return isinstance(last, ModelRequest) and _has(last.parts, RetryPromptPart, tool_name=None)
+    return isinstance(last, ModelRequest) and any(is_retry_feedback(part) for part in last.parts)
 
 
 def _tool_settled(messages: list[ModelMessage]) -> bool:
     last = messages[-1]
-    return isinstance(last, ModelRequest) and any(isinstance(part, ToolReturnPart) for part in last.parts)
+    return isinstance(last, ModelRequest) and any(
+        isinstance(part, ToolReturnPart) and part.outcome != 'retried' for part in last.parts
+    )
 
 
 class RedactSecrets:
@@ -137,7 +136,7 @@ def hide_tool_fumbling(turns: list[TranscriptTurn]) -> list[TranscriptTurn]:
 
 
 def _without_tool_fumbling(turn: TranscriptTurn) -> TranscriptTurn:
-    """Drops every tool-bound retry prompt and the call it answers. Orphaning a tool call is fatal
+    """Drops every tool-bound retried return and the call it answers. Orphaning a tool call is fatal
     for a provider but harmless here -- nothing in a transcript is ever sent to a model.
     """
     retried_call_ids = {
@@ -145,14 +144,14 @@ def _without_tool_fumbling(turn: TranscriptTurn) -> TranscriptTurn:
         for message in turn.messages
         if isinstance(message, ModelRequest)
         for part in message.parts
-        if isinstance(part, RetryPromptPart) and part.tool_name is not None
+        if isinstance(part, ToolReturnPart) and part.outcome == 'retried'
     }
     messages: list[ModelMessage] = []
     for message in turn.messages:
         kept = [
             part
             for part in message.parts
-            if not (isinstance(part, RetryPromptPart) and part.tool_name is not None)
+            if not (isinstance(part, ToolReturnPart) and part.outcome == 'retried')
             and not (isinstance(part, ToolCallPart) and part.tool_call_id in retried_call_ids)
         ]
         if kept:
@@ -267,7 +266,7 @@ def test_model_retry_recovers_inside_the_turn_and_is_stored(stack: RecoveryStack
     assert part_kinds(stack.stored_messages(cid)) == [
         'UserPromptPart',
         'ToolCallPart',
-        'RetryPromptPart',  # the tool's ModelRetry, bound to the call above
+        'ToolReturnPart',  # the tool's ModelRetry, bound to the call above
         'ToolCallPart',
         'ToolReturnPart',
         'TextPart',
@@ -282,12 +281,13 @@ def test_the_retry_trail_reaches_the_next_turn_by_default(stack: RecoveryStack) 
     stack.faults.tool_retries_before_success = 0
     assert stack.run('replaced the seal', cid, after=first.json()['run_id']).status_code == 200
 
-    # Turn 2's first model request carries turn 1 whole, retry prompt included: with no view seam
+    # Turn 2's first model request carries turn 1 whole, retried return included: with no view seam
     # wired, nothing hides it. `StripRejectedDrafts` would NOT remove it either -- a tool-bound
     # retry answers a tool call, and dropping it would orphan that call.
     turn2_first = stack.seen[3]
-    assert part_kinds(turn2_first).count('RetryPromptPart') == 1
-    assert _has(turn2_first[-1].parts, RetryPromptPart) is False  # it sits in history, not the new request
+    assert sum(_has(message.parts, ToolReturnPart, outcome='retried') for message in turn2_first) == 1
+    # It sits in history, not the new request.
+    assert _has(turn2_first[-1].parts, ToolReturnPart, outcome='retried') is False
 
 
 def test_retry_exhaustion_fails_the_turn_but_keeps_the_settled_work(stack: RecoveryStack) -> None:
@@ -312,14 +312,14 @@ def test_a_turn_after_retry_exhaustion_joins_provider_valid(stack: RecoveryStack
     assert stack.run('pump is leaking', cid).status_code == 500
     stack.faults.tool_always_retries = False
 
-    # The stored history now ENDS in a dangling request (a retry prompt nobody answered). A turn
+    # The stored history now ENDS in a dangling request (a retried return nobody answered). A turn
     # that builds on the failed one has to repair that seam: tool-bound parts first, then the new
     # user prompt.
     assert stack.run('replaced the seal', cid, after=stack.last_turn_id(cid)).status_code == 200
     joined = stack.seen[_RETRY_BUDGET + 1]
     leading = joined[-1]
     assert isinstance(leading, ModelRequest)
-    assert [type(part).__name__ for part in leading.parts] == ['RetryPromptPart', 'UserPromptPart']
+    assert [type(part).__name__ for part in leading.parts] == ['ToolReturnPart', 'UserPromptPart']
     assert stack.turn_phases(cid) == ['failed', 'answered']
 
 
@@ -349,7 +349,7 @@ def test_invalid_arguments_are_corrected_through_the_same_retry_channel(stack: R
     assert part_kinds(stack.stored_messages(cid)) == [
         'UserPromptPart',
         'ToolCallPart',  # the schema-invalid call
-        'RetryPromptPart',  # validation's own retry prompt, same channel as ModelRetry
+        'ToolReturnPart',  # validation's own retried return, same channel as ModelRetry
         'ToolCallPart',
         'ToolReturnPart',
         'TextPart',
@@ -368,11 +368,11 @@ def test_tool_retry_and_a_rejected_draft_combine_in_one_turn(stack: RecoveryStac
     assert part_kinds(stack.stored_messages(cid)) == [
         'UserPromptPart',
         'ToolCallPart',
-        'RetryPromptPart',  # tool-bound: the tool asked for a redo
+        'ToolReturnPart',  # tool-bound: the tool asked for a redo
         'ToolCallPart',
         'ToolReturnPart',
         'TextPart',  # the rejected draft
-        'RetryPromptPart',  # output-bound (tool_name None): the validator rejected it
+        'RetryFeedbackPart',  # output-bound: the validator rejected it
         'TextPart',  # the accepted answer
     ]
 
@@ -411,7 +411,7 @@ def test_a_retry_that_names_the_failed_attempt_inherits_its_recovery_work(stack:
     assert [part['part_kind'] for message in failed['messages'] for part in message['parts']] == [
         'user-prompt',
         'tool-call',
-        'retry-prompt',  # the first attempt's tool retry
+        'tool-return',  # the first attempt's tool retry
         'tool-call',
         'tool-return',
     ]
@@ -443,11 +443,11 @@ def test_three_view_seams_diverge_over_one_recovery_trail(viewed_stack: Recovery
     assert part_kinds(stored) == [
         'UserPromptPart',
         'ToolCallPart',
-        'RetryPromptPart',
+        'ToolReturnPart',
         'ToolCallPart',
         'ToolReturnPart',
         'TextPart',
-        'RetryPromptPart',
+        'RetryFeedbackPart',
         'TextPart',
     ]
     returns = [part for message in stored for part in message.parts if isinstance(part, ToolReturnPart)]
@@ -464,7 +464,7 @@ def test_three_view_seams_diverge_over_one_recovery_trail(viewed_stack: Recovery
     assert part_kinds(turn2_first_request) == [
         'UserPromptPart',
         'ToolCallPart',
-        'RetryPromptPart',  # tool-bound: kept, or the call above would be orphaned
+        'ToolReturnPart',  # tool-bound: kept, or the call above would be orphaned
         'ToolCallPart',
         'ToolReturnPart',
         'TextPart',  # only the ACCEPTED answer -- the rejected draft and its marker are stripped
@@ -477,6 +477,6 @@ def test_three_view_seams_diverge_over_one_recovery_trail(viewed_stack: Recovery
     # streamed it live, so hiding it on reload would contradict what the user already saw).
     (turn, _later) = stack.detail(cid)['turns']
     human_kinds = [part['part_kind'] for message in turn['messages'] for part in message['parts']]
-    assert human_kinds == ['user-prompt', 'tool-call', 'tool-return', 'text', 'retry-prompt', 'text']
+    assert human_kinds == ['user-prompt', 'tool-call', 'tool-return', 'text', 'retry-feedback', 'text']
     assert 'BAD:pump is leaking' in str(turn['messages'])
     assert SECRET not in str(turn['messages'])

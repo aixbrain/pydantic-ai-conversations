@@ -24,7 +24,7 @@ from typing import Any, Generic, TypeVar
 
 from fastapi.testclient import TestClient
 from pydantic_ai import Agent
-from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelRequestPart, UserPromptPart
 from pydantic_ai_app_factory import AppDeps, UserContext, create_agent_app
 from pydantic_ai_harness.step_persistence import ContinuableSnapshot, RunRecord
 
@@ -127,12 +127,22 @@ class DeletionRecorder:
         self.events.append(event)
 
 
+def is_retry_feedback(part: ModelRequestPart) -> bool:
+    """Whether `part` is a `RetryFeedbackPart` as a model sees it.
+
+    The stored part stays `RetryFeedbackPart`, but `Model.prepare_messages` hands a `ModelRetry`
+    message to the model as a `UserPromptPart` fenced in `<retry_feedback>`, so a `FunctionModel`
+    has to recognize it by that fence.
+    """
+    return isinstance(part, UserPromptPart) and isinstance(part.content, str) and '<retry_feedback>' in part.content
+
+
 def last_user_prompt(messages: list[ModelMessage]) -> str:
     """The most recent user-authored text in `messages`; `''` when there is none."""
     for message in reversed(messages):
         if isinstance(message, ModelRequest):
             for part in message.parts:
-                if isinstance(part, UserPromptPart) and isinstance(part.content, str):
+                if isinstance(part, UserPromptPart) and isinstance(part.content, str) and not is_retry_feedback(part):
                     return part.content
     return ''
 

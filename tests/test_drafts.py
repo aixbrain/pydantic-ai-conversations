@@ -3,7 +3,8 @@
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
-    RetryPromptPart,
+    RetryFeedbackPart,
+    RetryInfo,
     TextPart,
     ToolCallPart,
     ToolReturnPart,
@@ -17,8 +18,12 @@ def _draft(text: str = 'wrong') -> ModelResponse:
     return ModelResponse(parts=[TextPart(content=text)])
 
 
+def _feedback(text: str) -> RetryFeedbackPart:
+    return RetryFeedbackPart(content=text, retry=RetryInfo(cause='model_retry'))
+
+
 def _retry() -> ModelRequest:
-    return ModelRequest(parts=[RetryPromptPart(content='search first')])
+    return ModelRequest(parts=[_feedback('search first')])
 
 
 def test_pair_is_recognized_and_stripped():
@@ -50,7 +55,7 @@ def test_consecutive_pairs_all_stripped():
 
 
 def test_trailing_unmarked_draft_is_not_touched():
-    # Retry exhaustion: the final draft has no retry prompt after it (documented trap).
+    # Retry exhaustion: the final draft has no retry feedback after it (documented trap).
     msgs = [ModelRequest(parts=[UserPromptPart(content='q')]), _draft('d1'), _retry(), _draft('final')]
     stripped = strip_rejected_drafts(msgs)
     assert len(stripped) == 2
@@ -61,7 +66,7 @@ def test_tool_bound_retry_is_not_a_rejection_marker():
     msgs = [
         ModelRequest(parts=[UserPromptPart(content='q')]),
         ModelResponse(parts=[ToolCallPart(tool_name='t', args={}, tool_call_id='tc1')]),
-        ModelRequest(parts=[RetryPromptPart(content='bad args', tool_name='t', tool_call_id='tc1')]),
+        ModelRequest(parts=[ToolReturnPart(tool_name='t', content='bad args', tool_call_id='tc1', outcome='retried')]),
     ]
     assert rejected_draft_pairs(msgs) == []
     assert strip_rejected_drafts(msgs) == msgs
@@ -71,15 +76,13 @@ def test_response_with_tool_calls_is_never_treated_as_draft():
     # Defensive: dropping it would orphan the tool returns answering it.
     msgs = [
         ModelResponse(parts=[TextPart(content='x'), ToolCallPart(tool_name='t', args={}, tool_call_id='tc1')]),
-        ModelRequest(
-            parts=[ToolReturnPart(tool_name='t', content='r', tool_call_id='tc1'), RetryPromptPart(content='retry')]
-        ),
+        ModelRequest(parts=[ToolReturnPart(tool_name='t', content='r', tool_call_id='tc1'), _feedback('retry')]),
     ]
     assert rejected_draft_pairs(msgs) == []
 
 
 def test_retry_request_with_extra_parts_keeps_them():
-    req = ModelRequest(parts=[RetryPromptPart(content='retry'), UserPromptPart(content='kept')])
+    req = ModelRequest(parts=[_feedback('retry'), UserPromptPart(content='kept')])
     msgs = [_draft(), req]
     stripped = strip_rejected_drafts(msgs)
     assert len(stripped) == 1
@@ -89,7 +92,7 @@ def test_retry_request_with_extra_parts_keeps_them():
 
 
 def test_metadata_survives_the_part_surgery():
-    req = ModelRequest(parts=[RetryPromptPart(content='retry'), UserPromptPart(content='kept')], run_id='r9')
+    req = ModelRequest(parts=[_feedback('retry'), UserPromptPart(content='kept')], run_id='r9')
     stripped = strip_rejected_drafts([_draft(), req])
     assert stripped[0].run_id == 'r9'
 

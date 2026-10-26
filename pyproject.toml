@@ -32,13 +32,13 @@ dependencies = [
     "pydantic>=2",
     "pydantic-ai-slim>=2.16,<3",
     "pydantic-ai-app-factory>=0.4,<0.5",
-    # 0.x: this package leans on four harness guarantees verified against 0.59.x -- `list_runs`
+    # 0.x: this package leans on four harness guarantees verified against 0.61.x -- `list_runs`
     # sorted by started_at ascending, `latest_snapshot` returning complete snapshots only, no
     # delete primitive, and `StepPersistence` adopting `ctx.run_id` as the run id as long as no
     # `agent_name` is passed to it (feature.py therefore never passes one) -- an unpinned range
     # risks a silent break on a later 0.x. Each harness 0.N pins pydantic-ai-slim 2.N exactly,
     # so this pin also fixes the pydantic-ai version.
-    "pydantic-ai-harness>=0.59,<0.60",
+    "pydantic-ai-harness>=0.61,<0.62",
 ]
 
 [project.optional-dependencies]
