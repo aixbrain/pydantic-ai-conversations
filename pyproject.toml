@@ -1,6 +1,6 @@
 [project]
 name = "pydantic-ai-conversations"
-version = "0.1.0"
+version = "0.2.0"
 description = "Conversation persistence for pydantic-ai-app-factory, backed by pydantic-ai-harness StepPersistence"
 readme = "README.md"
 requires-python = ">=3.11"
