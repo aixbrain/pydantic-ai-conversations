@@ -685,3 +685,148 @@ async def test_add_on_routes_take_the_scope_query_parameters() -> None:
     assert client.get('/conversations/c1/turns/r1/mark').status_code == 422
     assert client.get('/conversations/c1/turns/r1/mark', params={'case_id': 'k1'}).status_code == 200
     assert client.get('/conversations/c1/turns/r1/mark', params={'case_id': 'k2'}).status_code == 404
+
+
+# --- add-on lifespan -------------------------------------------------------------------------------
+
+
+class _RecordingRegistry(InMemoryConversationRegistry):
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[str] = []
+
+    async def open(self) -> None:
+        self.events.append('open')
+
+    async def close(self) -> None:
+        self.events.append('close')
+
+
+class _OpeningAddon(_MarkAddon):
+    def __init__(self) -> None:
+        self.events: list[str] = []
+
+    async def open(self) -> None:
+        self.events.append('open')
+
+    async def close(self) -> None:
+        self.events.append('close')
+
+
+async def test_lifespan_opens_add_ons_after_the_registry_and_closes_them_first() -> None:
+    """An add-on without a lifespan (`_MarkAddon`) is passed over."""
+    registry = _RecordingRegistry()
+    addon = _OpeningAddon()
+    feature = ConversationsFeature(registry=registry, step_store=InMemoryStepStore(), addons=[_MarkAddon(), addon])
+    async with feature.lifespan(FastAPI()):
+        assert registry.events == ['open'] and addon.events == ['open']
+    assert addon.events == ['open', 'close'] and registry.events == ['open', 'close']
+
+
+async def test_a_failing_add_on_close_still_closes_the_registry() -> None:
+    registry = _RecordingRegistry()
+
+    class _BrokenClose(_OpeningAddon):
+        async def close(self) -> None:
+            raise RuntimeError('pool gone')
+
+    feature = ConversationsFeature(registry=registry, step_store=InMemoryStepStore(), addons=[_BrokenClose()])
+    with pytest.raises(ExceptionGroup):
+        async with feature.lifespan(FastAPI()):
+            pass
+    assert registry.events == ['open', 'close']
+
+
+# --- add-on deletion -------------------------------------------------------------------------------
+
+
+class _DeletingAddon(_MarkAddon):
+    def __init__(self) -> None:
+        self.events: list[DeletionEvent] = []
+
+    async def on_delete(self, event: DeletionEvent) -> None:
+        self.events.append(event)
+
+
+async def test_purge_runs_the_add_ons_on_delete_after_the_apps_hooks() -> None:
+    registry, store = InMemoryConversationRegistry(), InMemoryStepStore()
+    seen: list[str] = []
+
+    async def app_hook(event: DeletionEvent) -> None:
+        seen.append('app')
+
+    addon = _DeletingAddon()
+    feature = ConversationsFeature(registry=registry, step_store=store, on_delete=[app_hook], addons=[addon])
+    namespace = feature.namespace_for(UserContext(user_id='alice', tenant_id='t1'))
+    await registry.register_conversation(namespace, 'c1', created_by='alice')
+
+    await feature.purge(namespace_key=namespace, conversation_id='c1')
+
+    assert seen == ['app'] and [e.kind for e in addon.events] == ['purge']
+
+
+async def test_soft_delete_route_runs_the_add_ons_on_delete() -> None:
+    registry, store = InMemoryConversationRegistry(), InMemoryStepStore()
+    addon = _DeletingAddon()
+    feature = ConversationsFeature(registry=registry, step_store=store, addons=[addon])
+    namespace = feature.namespace_for(UserContext(user_id='alice', tenant_id='t1'))
+    await registry.register_conversation(namespace, 'c1', created_by='alice')
+    app = FastAPI()
+    for router in feature.routers(auth=_auth):
+        app.include_router(router)
+
+    assert TestClient(app).delete('/conversations/c1').status_code == 204
+    assert [e.kind for e in addon.events] == ['soft_delete']
+
+
+async def test_add_ons_close_in_reverse_order() -> None:
+    order: list[str] = []
+
+    class _Named(_OpeningAddon):
+        def __init__(self, label: str) -> None:
+            super().__init__()
+            self._label = label
+
+        async def close(self) -> None:
+            order.append(self._label)
+
+    feature = ConversationsFeature(
+        registry=_RecordingRegistry(), step_store=InMemoryStepStore(), addons=[_Named('first'), _Named('second')]
+    )
+    async with feature.lifespan(FastAPI()):
+        pass
+    assert order == ['second', 'first']
+
+
+async def test_health_nests_the_add_ons_that_ping() -> None:
+    class _Pinging(_MarkAddon):
+        async def ping(self) -> Mapping[str, Any]:
+            return {'ok': True, 'rows': 'n/a'}
+
+    feature = ConversationsFeature(
+        registry=InMemoryConversationRegistry(), step_store=InMemoryStepStore(), addons=[_MarkAddon(), _Pinging()]
+    )
+    assert await feature.health() == {'ok': True, 'addons': {'mark': {'ok': True, 'rows': 'n/a'}}}
+
+
+async def test_health_has_no_addons_key_when_no_add_on_pings() -> None:
+    feature = ConversationsFeature(
+        registry=InMemoryConversationRegistry(), step_store=InMemoryStepStore(), addons=[_MarkAddon()]
+    )
+    assert await feature.health() == {'ok': True}
+
+
+async def test_a_failing_registry_close_keeps_the_add_on_close_failures() -> None:
+    class _BrokenRegistry(_RecordingRegistry):
+        async def close(self) -> None:
+            raise RuntimeError('registry gone')
+
+    class _BrokenClose(_OpeningAddon):
+        async def close(self) -> None:
+            raise RuntimeError('pool gone')
+
+    feature = ConversationsFeature(registry=_BrokenRegistry(), step_store=InMemoryStepStore(), addons=[_BrokenClose()])
+    with pytest.raises(ExceptionGroup) as failed:
+        async with feature.lifespan(FastAPI()):
+            pass
+    assert sorted(str(e) for e in failed.value.exceptions) == ['pool gone', 'registry gone']

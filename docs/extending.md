@@ -174,7 +174,8 @@ inspects the protocol. See [Rebuilding a chat frontend](http-api.md#rebuilding-a
 An add-on is composed into the feature through `addons=`. It has a name, and whichever of the
 optional capabilities it implements, each a protocol the feature detects with `isinstance`:
 `SupportsTurnFields` for per-turn data on the detail read, `SupportsRouters` for routes of
-its own. The name is the key under `addons`, what `config()` reports, and must be a unique slug.
+its own, `SupportsLifespan`, `SupportsDeletion` and `SupportsPing` for a store of its own. The name is
+the key under `addons`, what `config()` reports, and must be a unique slug.
 
 ### Turn fields
 
@@ -234,7 +235,7 @@ from fastapi import APIRouter, Depends
 from pydantic_ai_conversations import AddonCaller, AddonRouteGuard
 
 
-class FeedbackAddon:  # the class from above, with routes
+class FeedbackAddon:  # the sketch from above, with routes; the shipped one is TurnFeedbackAddon
     name = 'feedback'
     turn_model = FeedbackOut
 
@@ -253,6 +254,10 @@ class FeedbackAddon:  # the class from above, with routes
 
         return [router]
 ```
+
+An add-on may also open and close a store with the registry (`SupportsLifespan`) and clean
+up on delete (`SupportsDeletion`); the shipped [turn feedback add-on](feedback.md) does
+both.
 
 ## Storing why a turn failed
 

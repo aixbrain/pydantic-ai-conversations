@@ -8,8 +8,8 @@ Conversation persistence as a `pydantic-ai-app-factory` feature: per-turn messag
 ## Module layout
 
 Public modules are the API: `feature.py`, `registry.py`, `scope.py`, `errors.py`,
-`testing.py`, `stores.py`, `addons.py` (the add-on contract), and the `sqlite/`, `mongo/`, and
-`postgres/` backend packages.
+`testing.py`, `stores.py`, `addons.py` (the add-on contract), `feedback/` (the turn feedback
+add-on), and the `sqlite/`, `mongo/`, and `postgres/` backend packages.
 Every other module is a private implementation detail and underscore-prefixed; nothing outside
 this package may import one -- inside `sqlite/`, `mongo/`, and `postgres/` the same rule applies to
 their own modules (`_driver.py`, `_registry.py`, and `_store.py`, plus `_schema.py` in
@@ -18,8 +18,8 @@ their own modules (`_driver.py`, `_registry.py`, and `_store.py`, plus `_schema.
 names -- `ConversationsCapability`, `build_conversation_router`,
 the wire models (`ConversationDetail`/`ConversationList`/`ConversationOut`), and the delete hook
 types (`DeletionEvent`, `OnDeleteHook`) -- are implemented in private modules (`_capability.py`,
-`_routes.py`) and re-exported from `__init__.py`; the package root, not the module a name happens to
-live in, is the supported import surface.
+`_routes.py`, `_hooks.py`) and re-exported from `__init__.py`; the package root, not the module a
+name happens to live in, is the supported import surface.
 
 ## Boundaries
 
@@ -38,9 +38,13 @@ live in, is the supported import surface.
   what they need from every registry (the turn lineage, the turn's phase and failure reason) is
   part of the core protocol.
 - `sqlite/`, `mongo/`, and `postgres/` are backend kits, each kept liftable into its own
-  distribution: each imports nothing from this package but `errors` and the `registry` types, and
-  driver plumbing (connection ownership, schema/index setup, error mapping) stays in its own
-  `_driver.py`, apart from the port implementations. `sqlite/` needs no extra -- stdlib `sqlite3`
+  distribution: each imports nothing from this package but `errors`, the `registry` types, and the
+  store port in `feedback/store.py`, and driver plumbing (connection ownership, schema/index
+  setup, error mapping) stays in its own `_driver.py`, apart from the port implementations.
+  `feedback/` builds on the public add-on API only (`addons.AddonRouteGuard`,
+  `stores.SupportsTransientErrors`, `stores.SupportsPing`), so it could be lifted out like a kit;
+  the kits ship its stores because a store belongs with its driver, and `feedback/store.py` is
+  the one file a lifted kit would carry along. `sqlite/` needs no extra -- stdlib `sqlite3`
   only. `mongo/` has a real driver dependency, so it ships behind the `mongodb` extra; `postgres/`
   ships behind the `postgres` extra the same way.
 

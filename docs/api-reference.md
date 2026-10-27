@@ -40,7 +40,7 @@ ConversationsFeature(
 | `ui_messages` | Encoder for `TranscriptTurnOut.ui_messages` |
 | `max_history_runs` | Caps the turns loaded per run; `<= 0` raises `ValueError` when the app is built |
 | `describe_failure` | Maps a failed run's exception to the stored `TurnError` |
-| `addons` | Add-ons: `SupportsTurnFields` ones fill `TranscriptTurnOut.addons`, `SupportsRouters` ones mount routes; a duplicate or non-slug name raises `ValueError` when the app is built |
+| `addons` | Add-ons: `SupportsTurnFields` ones fill `TranscriptTurnOut.addons`, `SupportsRouters` ones mount routes, `SupportsLifespan` ones open and close with the registry, `SupportsDeletion` ones run with the delete hooks; a duplicate or non-slug name raises `ValueError` when the app is built |
 
 Members: `name = 'conversations'`; `extras_type`, a pydantic model with `previous_run_id` plus
 one required field per `extras.*` scope entry; `capabilities()`, `routers(auth=)`,
@@ -258,6 +258,8 @@ ConversationAddon   Protocol: name: str (read-only)
 SupportsTurnFields  Protocol (runtime_checkable): turn_model: type[BaseModel] (read-only),
                     async load_turns(query: AddonTurnQuery, /) -> Mapping[run_id, BaseModel]
 SupportsRouters Protocol (runtime_checkable): routers(guard: AddonRouteGuard, /) -> Sequence[APIRouter]
+SupportsLifespan Protocol (runtime_checkable): async open(), async close()
+SupportsDeletion Protocol (runtime_checkable): async on_delete(event: DeletionEvent)
 AddonCaller(user: HasUserId, namespace_key: str)
 AddonRouteGuard(registry, scope, auth): caller() -> FastAPI dependency yielding AddonCaller,
                     async require_conversation(namespace_key, conversation_id) -> ConversationMeta,
@@ -326,7 +328,8 @@ From `pydantic_ai_conversations`: `ConversationsFeature`, `ConversationsCapabili
 `strip_rejected_drafts`, `rejected_draft_pairs`, `TranscriptTurn`, `TranscriptView`,
 `load_transcript`, `build_conversation_router`, `ConversationDetail`, `ConversationList`,
 `ConversationOut`, `TranscriptTurnOut`, `TurnErrorOut`, `ConversationAddon`, `SupportsTurnFields`,
-`SupportsRouters`, `AddonTurnQuery`, `AddonRouteGuard`, `AddonCaller`, `DeletionEvent`, `DeletionKind`,
+`SupportsRouters`, `SupportsLifespan`, `SupportsDeletion`, `AddonTurnQuery`,
+`AddonRouteGuard`, `AddonCaller`, `DeletionEvent`, `DeletionKind`,
 `OnDeleteHook`, `UIMessageEncoder`, `UserDependency`, `ConversationNotFound`,
 `RegistryUnavailable`, `ConversationMeta`, `ConversationRegistry`,
 `InMemoryConversationRegistry`, `RunPhase`, `TurnError`, `TurnRecord`, `HasUserId`,

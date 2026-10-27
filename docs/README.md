@@ -16,6 +16,8 @@ Start at the top; each page assumes the ones above it.
 1. [Backends](backends.md): SQLite, MongoDB, PostgreSQL; schema and upgrades.
 1. [Extending](extending.md): your own registry or step store, snapshot preparers, transcript
    views, add-ons, failure reasons, use without the app factory.
+1. [Turn feedback add-on](feedback.md): an app-defined payload per turn and author, its routes
+   and stores.
 1. [Operations](operations.md): readiness, concurrency, logging, known limits, version pins.
 1. [Testing](testing.md): testing an app with conversations; the registry conformance suite.
 1. [Reference](api-reference.md): signatures, defaults, wire shapes, error codes.

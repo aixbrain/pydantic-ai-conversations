@@ -8,8 +8,9 @@ Prerequisites: [Getting started](getting-started.md).
 ## Startup, readiness, config
 
 The feature opens the registry on startup and closes it on shutdown through the app's
-lifespan. The step store is not opened or closed by the feature; who closes a pool or client
-the store borrows is covered per backend in [Backends](backends.md).
+lifespan, and add-ons with a store of their own (`SupportsLifespan`) after and before it. The
+step store is not opened or closed by the feature; who closes a pool or client the store
+borrows is covered per backend in [Backends](backends.md).
 
 `/readyz` is unauthenticated and nests each feature's report:
 
@@ -17,8 +18,9 @@ the store borrows is covered per backend in [Backends](backends.md).
 {"status": "ok", "reports": {"conversations": {"ok": true, "step_store": {"ok": true}}}}
 ```
 
-The `conversations` report is the registry's `ping()`, plus a `step_store` key when the
-store supports `ping`. Reports carry status only and no counts, because the endpoint is
+The `conversations` report is the registry's `ping()`, plus a `step_store` key when the store
+supports `ping`, plus an `addons` key nesting the report of every add-on that pings (the
+feedback add-on's store, for one). Reports carry status only and no counts, because the endpoint is
 public. A `ping` that raises marks the app not ready. Every shipped `ping` runs a statement
 against the database, so an outage after startup shows.
 

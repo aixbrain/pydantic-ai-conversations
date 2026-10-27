@@ -19,6 +19,7 @@ from uuid import uuid4
 import pytest
 
 from pydantic_ai_conversations.errors import ConversationNotFound
+from pydantic_ai_conversations.feedback.store import TurnFeedbackStore
 from pydantic_ai_conversations.registry import ConversationRegistry, TurnError
 
 _NS_A = '[["user.tenant_id","t1"]]'
@@ -300,3 +301,164 @@ class RegistryContract:
         await registry.open()
         assert await registry.ping() is not None
         await registry.close()
+
+
+class TurnFeedbackStoreContract:
+    """Subclass and override the `feedback_store` fixture with your implementation.
+
+    Tests mint fresh conversation ids and run ids, so the suite is safe against a persistent,
+    non-empty store.
+    """
+
+    @pytest.fixture
+    def feedback_store(self) -> TurnFeedbackStore:  # pragma: no cover - consumers must override
+        raise NotImplementedError('override the `feedback_store` fixture')
+
+    async def test_upsert_creates_then_replaces_the_callers_entry(self, feedback_store: TurnFeedbackStore) -> None:
+        cid, run_id = uuid4().hex, uuid4().hex
+        first = await feedback_store.upsert(
+            kind='report',
+            namespace_key=_NS_A,
+            conversation_id=cid,
+            run_id=run_id,
+            author_user_id='alice',
+            data={'category': 'wrong', 'remarks': 'a'},
+        )
+        second = await feedback_store.upsert(
+            kind='report',
+            namespace_key=_NS_A,
+            conversation_id=cid,
+            run_id=run_id,
+            author_user_id='alice',
+            data={'category': 'wrong', 'remarks': 'b'},
+        )
+        assert second.data == {'category': 'wrong', 'remarks': 'b'}
+        assert second.created_at == first.created_at and second.updated_at >= first.updated_at
+        assert len(await feedback_store.list(kind='report', namespace_key=_NS_A, conversation_id=cid)) == 1
+
+    async def test_entries_are_per_author_and_per_kind(self, feedback_store: TurnFeedbackStore) -> None:
+        cid, run_id = uuid4().hex, uuid4().hex
+        for author in ('alice', 'bob'):
+            await feedback_store.upsert(
+                kind='report', namespace_key=_NS_A, conversation_id=cid, run_id=run_id, author_user_id=author, data={}
+            )
+        await feedback_store.upsert(
+            kind='rating',
+            namespace_key=_NS_A,
+            conversation_id=cid,
+            run_id=run_id,
+            author_user_id='alice',
+            data={'up': True},
+        )
+        reports = await feedback_store.by_run_ids(
+            kind='report', namespace_key=_NS_A, conversation_id=cid, run_ids=[run_id]
+        )
+        assert sorted(r.author_user_id for r in reports) == ['alice', 'bob']
+        mine = await feedback_store.by_run_ids(
+            kind='report', namespace_key=_NS_A, conversation_id=cid, run_ids=[run_id], author_user_id='alice'
+        )
+        assert [r.author_user_id for r in mine] == ['alice']
+        assert len(await feedback_store.list(kind='rating', namespace_key=_NS_A, conversation_id=cid)) == 1
+
+    async def test_by_run_ids_returns_only_the_named_runs(self, feedback_store: TurnFeedbackStore) -> None:
+        cid, wanted, other = uuid4().hex, uuid4().hex, uuid4().hex
+        for run_id in (wanted, other):
+            await feedback_store.upsert(
+                kind='report', namespace_key=_NS_A, conversation_id=cid, run_id=run_id, author_user_id='alice', data={}
+            )
+        found = await feedback_store.by_run_ids(
+            kind='report', namespace_key=_NS_A, conversation_id=cid, run_ids=[wanted]
+        )
+        assert [r.run_id for r in found] == [wanted]
+        assert (
+            await feedback_store.by_run_ids(kind='report', namespace_key=_NS_A, conversation_id=cid, run_ids=[]) == []
+        )
+
+    async def test_foreign_namespace_sees_nothing(self, feedback_store: TurnFeedbackStore) -> None:
+        cid, run_id = uuid4().hex, uuid4().hex
+        await feedback_store.upsert(
+            kind='report', namespace_key=_NS_A, conversation_id=cid, run_id=run_id, author_user_id='alice', data={}
+        )
+        assert await feedback_store.list(kind='report', namespace_key=_NS_B, conversation_id=cid) == []
+        assert not await feedback_store.delete(
+            kind='report', namespace_key=_NS_B, conversation_id=cid, run_id=run_id, author_user_id='alice'
+        )
+
+    async def test_delete_reports_whether_an_entry_existed(self, feedback_store: TurnFeedbackStore) -> None:
+        cid, run_id = uuid4().hex, uuid4().hex
+        await feedback_store.upsert(
+            kind='report', namespace_key=_NS_A, conversation_id=cid, run_id=run_id, author_user_id='alice', data={}
+        )
+        assert (
+            await feedback_store.delete(
+                kind='report', namespace_key=_NS_A, conversation_id=cid, run_id=run_id, author_user_id='alice'
+            )
+            is True
+        )
+        assert (
+            await feedback_store.delete(
+                kind='report', namespace_key=_NS_A, conversation_id=cid, run_id=run_id, author_user_id='alice'
+            )
+            is False
+        )
+
+    async def test_delete_conversation_removes_every_kind(self, feedback_store: TurnFeedbackStore) -> None:
+        cid, run_id = uuid4().hex, uuid4().hex
+        for kind in ('report', 'rating'):
+            await feedback_store.upsert(
+                kind=kind, namespace_key=_NS_A, conversation_id=cid, run_id=run_id, author_user_id='alice', data={}
+            )
+        assert await feedback_store.delete_conversation(namespace_key=_NS_A, conversation_id=cid) == 2
+        assert await feedback_store.delete_conversation(namespace_key=_NS_A, conversation_id=cid) == 0
+        assert await feedback_store.list(kind='report', namespace_key=_NS_A, conversation_id=cid) == []
+
+    async def test_timestamps_are_aware_utc(self, feedback_store: TurnFeedbackStore) -> None:
+        record = await feedback_store.upsert(
+            kind='report',
+            namespace_key=_NS_A,
+            conversation_id=uuid4().hex,
+            run_id=uuid4().hex,
+            author_user_id='alice',
+            data={},
+        )
+        assert record.created_at.tzinfo is not None and record.updated_at.tzinfo is not None
+
+    async def test_ping_reports_health(self, feedback_store: TurnFeedbackStore) -> None:
+        assert (await feedback_store.ping())['ok'] is True
+
+    async def test_the_same_turn_and_author_in_another_namespace_is_another_entry(
+        self, feedback_store: TurnFeedbackStore
+    ) -> None:
+        """Identity includes the namespace and the conversation: an upsert never moves a row."""
+        cid, run_id = uuid4().hex, uuid4().hex
+        await feedback_store.upsert(
+            kind='report',
+            namespace_key=_NS_A,
+            conversation_id=cid,
+            run_id=run_id,
+            author_user_id='alice',
+            data={'n': 'a'},
+        )
+        await feedback_store.upsert(
+            kind='report',
+            namespace_key=_NS_B,
+            conversation_id=cid,
+            run_id=run_id,
+            author_user_id='alice',
+            data={'n': 'b'},
+        )
+        (in_a,) = await feedback_store.list(kind='report', namespace_key=_NS_A, conversation_id=cid)
+        (in_b,) = await feedback_store.list(kind='report', namespace_key=_NS_B, conversation_id=cid)
+        assert (in_a.data, in_b.data) == ({'n': 'a'}, {'n': 'b'})
+
+    async def test_list_is_ordered_by_creation_then_author(self, feedback_store: TurnFeedbackStore) -> None:
+        cid, run_id = uuid4().hex, uuid4().hex
+        for author in ('bob', 'alice'):
+            await feedback_store.upsert(
+                kind='report', namespace_key=_NS_A, conversation_id=cid, run_id=run_id, author_user_id=author, data={}
+            )
+        rows = await feedback_store.list(kind='report', namespace_key=_NS_A, conversation_id=cid)
+        assert [r.author_user_id for r in rows] == sorted(
+            (r.author_user_id for r in rows),
+            key=lambda a: (next(x.created_at for x in rows if x.author_user_id == a), a),
+        )

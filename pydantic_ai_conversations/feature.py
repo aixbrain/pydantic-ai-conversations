@@ -18,15 +18,17 @@ from pydantic_ai_app_factory import AppDeps, AuthProvider, Feature
 from pydantic_ai_harness.step_persistence import StepPersistence, StepStore
 
 from pydantic_ai_conversations._capability import ConversationsCapability, FailureDescriber
+from pydantic_ai_conversations._hooks import DeletionEvent, OnDeleteHook
 from pydantic_ai_conversations._lineage import extras_model
 from pydantic_ai_conversations._loader import TranscriptView
-from pydantic_ai_conversations._routes import (
-    DeletionEvent,
-    OnDeleteHook,
-    UIMessageEncoder,
-    build_conversation_router,
+from pydantic_ai_conversations._routes import UIMessageEncoder, build_conversation_router
+from pydantic_ai_conversations.addons import (
+    AddonRouteGuard,
+    ConversationAddon,
+    SupportsDeletion,
+    SupportsLifespan,
+    SupportsRouters,
 )
-from pydantic_ai_conversations.addons import AddonRouteGuard, ConversationAddon, SupportsRouters
 from pydantic_ai_conversations.registry import ConversationRegistry
 from pydantic_ai_conversations.scope import (
     HasUserId,
@@ -89,6 +91,11 @@ class ConversationsFeature(Feature):
         self._max_history_runs = max_history_runs
         self._describe_failure = describe_failure
         self._addons = tuple(addons)
+        # The app's hooks first, then each deletion-aware add-on's, in `addons` order.
+        self._delete_hooks: tuple[OnDeleteHook, ...] = (
+            *self._on_delete,
+            *(addon.on_delete for addon in self._addons if isinstance(addon, SupportsDeletion)),
+        )
         # One recipe for the chat body AND the route query params: the scope fields cannot drift.
         # The chat body additionally carries `previous_run_id`, which no route takes.
         self._scope_extras_type = scope_extras_model(self._scope)
@@ -130,7 +137,7 @@ class ConversationsFeature(Feature):
                 enable_create=self._enable_create_route,
                 enable_title=self._enable_title_route,
                 filterable_attrs=self._filterable_attrs,
-                on_delete=self._on_delete,
+                on_delete=self._delete_hooks,
                 transcript_view=self._transcript_view,
                 ui_messages=self._ui_messages,
                 addons=self._addons,
@@ -146,10 +153,28 @@ class ConversationsFeature(Feature):
         @asynccontextmanager
         async def _registry_lifespan() -> AsyncGenerator[None]:
             await self._registry.open()
+            opened: list[SupportsLifespan] = []
             try:
+                for addon in self._addons:
+                    if isinstance(addon, SupportsLifespan):
+                        await addon.open()
+                        opened.append(addon)
                 yield
             finally:
-                await self._registry.close()
+                # Reverse order, and every close runs even when an earlier one raises; the registry
+                # closes last because the add-ons may still consult it on the way down.
+                failures: list[Exception] = []
+                for addon in reversed(opened):
+                    try:
+                        await addon.close()
+                    except Exception as exc:
+                        failures.append(exc)
+                try:
+                    await self._registry.close()
+                except Exception as exc:
+                    failures.append(exc)
+                if failures:
+                    raise ExceptionGroup('close failed on shutdown', failures)
 
         return _registry_lifespan()
 
@@ -162,6 +187,11 @@ class ConversationsFeature(Feature):
                     'overwriting it with the step store report (see ConversationRegistry.ping)'
                 )
             report['step_store'] = dict(await self._step_store.ping())
+        addon_reports = {
+            addon.name: dict(await addon.ping()) for addon in self._addons if isinstance(addon, SupportsPing)
+        }
+        if addon_reports:
+            report['addons'] = addon_reports
         return report
 
     def config(self) -> Mapping[str, Any]:
@@ -215,7 +245,7 @@ class ConversationsFeature(Feature):
                 await self._step_store.delete_runs(run_ids=run_ids)
         event = DeletionEvent(namespace_key=namespace_key, conversation_id=conversation_id, kind='purge', meta=meta)
         failures: list[Exception] = []
-        for hook in self._on_delete:
+        for hook in self._delete_hooks:
             try:
                 await hook(event)
             except Exception as exc:

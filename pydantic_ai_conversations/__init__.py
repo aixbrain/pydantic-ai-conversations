@@ -14,14 +14,12 @@ from pydantic_ai_conversations._capability import (
     agent_error_mapper,
 )
 from pydantic_ai_conversations._drafts import StripRejectedDrafts, rejected_draft_pairs, strip_rejected_drafts
+from pydantic_ai_conversations._hooks import DeletionEvent, DeletionKind, OnDeleteHook
 from pydantic_ai_conversations._loader import TranscriptTurn, TranscriptView, load_transcript
 from pydantic_ai_conversations._routes import (
     ConversationDetail,
     ConversationList,
     ConversationOut,
-    DeletionEvent,
-    DeletionKind,
-    OnDeleteHook,
     TranscriptTurnOut,
     TurnErrorOut,
     UIMessageEncoder,
@@ -32,6 +30,8 @@ from pydantic_ai_conversations.addons import (
     AddonRouteGuard,
     AddonTurnQuery,
     ConversationAddon,
+    SupportsDeletion,
+    SupportsLifespan,
     SupportsRouters,
     SupportsTurnFields,
 )
@@ -88,6 +88,8 @@ __all__ = [
     'SnapshotPreparer',
     'StripRejectedDrafts',
     'SupportsConversationDeps',
+    'SupportsDeletion',
+    'SupportsLifespan',
     'SupportsPing',
     'SupportsRouters',
     'SupportsRunDeletion',

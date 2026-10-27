@@ -120,7 +120,7 @@ An add-on joins its own records to the transcript by `run_id` and the detail sho
 `turns[].addons.<name>`, typed per add-on in the OpenAPI schema. `GET /config/features` lists
 every configured add-on under `addons`, whether or not it has turn fields. A turn streamed in
 the current session carries no add-on data until the client fetches the detail again. See
-[Extending](extending.md#add-ons).
+[Extending](extending.md#add-ons); the shipped [turn feedback add-on](feedback.md) is one.
 
 ## Deleting
 

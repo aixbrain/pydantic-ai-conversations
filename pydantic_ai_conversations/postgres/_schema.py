@@ -48,3 +48,21 @@ async def create_schema(pool: AsyncConnectionPool[AsyncConnection[DictRow]], sch
     async with pool.connection() as conn:
         await conn.execute(schema_statements(schema))
         await conn.commit()
+
+
+FEEDBACK_SCHEMA_SQL = files(cast(str, __package__)).joinpath('feedback.sql').read_text(encoding='utf-8')
+"""The feedback add-on's DDL, shipped apart from `schema.sql` so an app without the add-on applies
+nothing for it."""
+
+
+def feedback_schema_statements(schema: str) -> sql.SQL:
+    """`FEEDBACK_SCHEMA_SQL` with the schema name substituted, the same way `schema_statements` does it."""
+    quoted = sql.Identifier(schema).as_string(None)
+    return sql.SQL(FEEDBACK_SCHEMA_SQL.replace('{schema}', quoted))  # pyright: ignore[reportArgumentType]
+
+
+async def create_feedback_schema(pool: AsyncConnectionPool[AsyncConnection[DictRow]], schema: str = 'public') -> None:
+    """Apply the feedback DDL; for tests and local development, as `create_schema` is."""
+    async with pool.connection() as conn:
+        await conn.execute(feedback_schema_statements(schema))
+        await conn.commit()
