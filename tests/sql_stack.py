@@ -131,10 +131,12 @@ def is_retry_feedback(part: ModelRequestPart) -> bool:
     """Whether `part` is a `RetryFeedbackPart` as a model sees it.
 
     The stored part stays `RetryFeedbackPart`, but `Model.prepare_messages` hands a `ModelRetry`
-    message to the model as a `UserPromptPart` fenced in `<retry_feedback>`, so a `FunctionModel`
+    message to the model as a `UserPromptPart` fenced in `<pyai:retry_feedback>`, so a `FunctionModel`
     has to recognize it by that fence.
     """
-    return isinstance(part, UserPromptPart) and isinstance(part.content, str) and '<retry_feedback>' in part.content
+    return (
+        isinstance(part, UserPromptPart) and isinstance(part.content, str) and '<pyai:retry_feedback>' in part.content
+    )
 
 
 def last_user_prompt(messages: list[ModelMessage]) -> str:

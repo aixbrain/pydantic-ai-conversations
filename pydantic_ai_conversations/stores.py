@@ -17,7 +17,6 @@ import logging
 from collections.abc import Awaitable, Mapping, Sequence
 from typing import Any, Protocol, TypeVar, runtime_checkable
 
-from pydantic_ai.messages import ModelResponse
 from pydantic_ai_app_factory import AgentError
 from pydantic_ai_harness.step_persistence import (
     ContinuableSnapshot,
@@ -181,10 +180,8 @@ class NewMessagesPreparer:
     `complete` snapshot with no message of the run is emptied, which skips the save and keeps the
     run's frontier save: the harness's at-failure save can hold the list from before pydantic-ai
     rebuilt it, where a prompt sent inside `message_history` is the client's unstamped original.
-    An unstamped `interrupted` snapshot passes through. A trailing empty `interrupted` response is
-    dropped: pydantic-ai appends it when a streamed model call fails before its first part, and it
-    would otherwise end the failed turn in place of its prompt. `ConversationsFeature` wires this
-    preparer ahead of your own.
+    An unstamped `interrupted` snapshot passes through. `ConversationsFeature` wires this preparer
+    ahead of your own.
     """
 
     def prepare_snapshot(self, snapshot: ContinuableSnapshot) -> ContinuableSnapshot:
@@ -193,12 +190,6 @@ class NewMessagesPreparer:
         if new_start is None:
             # No message of the run: the at-failure replay of an unstamped start-of-run input.
             return snapshot if snapshot.state == 'interrupted' else dataclasses.replace(snapshot, messages=[])
-        new_messages = list(messages[new_start:])
-        last = new_messages[-1]
-        if isinstance(last, ModelResponse) and not last.parts and last.state == 'interrupted':
-            # pydantic-ai's marker for a stream that failed before its first part.
-            new_messages.pop()
-            return dataclasses.replace(snapshot, messages=new_messages)
         if new_start == 0:
             return snapshot
-        return dataclasses.replace(snapshot, messages=new_messages)
+        return dataclasses.replace(snapshot, messages=list(messages[new_start:]))

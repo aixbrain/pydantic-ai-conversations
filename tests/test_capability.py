@@ -2084,9 +2084,9 @@ def test_resumable_recognizes_open_tool_calls_and_suspended_turns() -> None:
 
 
 async def test_a_stream_that_fails_on_open_leaves_the_prompt_as_the_failed_turn() -> None:
-    """A streamed model call that fails before its first part makes pydantic-ai append an empty
-    `interrupted` response, which the harness saves as `complete`; the write seam drops it, so
-    the failed turn is its prompt and a resume without a new message re-sends it."""
+    """A streamed model call that fails before its first part leaves no response in the harness's
+    at-failure save, so the failed turn is its prompt and a resume without a new message re-sends
+    it."""
     registry, store, seen = InMemoryConversationRegistry(), InMemoryStepStore(), []
     fail = {'next': False}
 
@@ -2113,6 +2113,54 @@ async def test_a_stream_that_fails_on_open_leaves_the_prompt_as_the_failed_turn(
             await stream.get_output()
 
     stored = await store.latest_snapshot(run_id='r2')
+    assert stored is not None and [m.kind for m in stored.messages] == ['request']
+
+    async with agent.run_stream(
+        deps=_deps(previous='r2'), conversation_id='c1', run_id='r3', message_history=[]
+    ) as stream:
+        await stream.get_output()
+    assert _prompts(seen[-1]) == ['first', 'second']
+    assert seen[-1][-1].kind == 'request'
+
+
+async def test_a_run_cancelled_while_its_stream_opens_leaves_the_prompt_as_the_failed_turn() -> None:
+    """A cancellation while the stream opens takes another path through pydantic-ai than a stream
+    error, and the stored turn must still end in its prompt, so a resume re-sends it."""
+    registry, store, seen = InMemoryConversationRegistry(), InMemoryStepStore(), []
+    hang = {'next': False}
+    opened = asyncio.Event()
+
+    async def stream_fn(messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator[str]:
+        seen.append(list(messages))
+        if hang['next']:
+            hang['next'] = False
+            opened.set()
+            await asyncio.Event().wait()
+        yield 'ok'
+
+    agent = Agent(
+        FunctionModel(stream_function=stream_fn),
+        deps_type=AppDeps,
+        capabilities=[
+            ConversationsCapability(registry=registry, step_store=store, scope=SCOPE),
+            StepPersistence(store=PreparingStepStore(store, [NewMessagesPreparer()]), capture_frontier=True),
+        ],
+    )
+    async with agent.run_stream('first', deps=_deps(), conversation_id='c1', run_id='r1') as stream:
+        await stream.get_output()
+
+    async def second_turn() -> None:
+        async with agent.run_stream('second', deps=_deps(previous='r1'), conversation_id='c1', run_id='r2') as stream:
+            await stream.get_output()
+
+    hang['next'] = True
+    task = asyncio.create_task(second_turn())
+    await opened.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    stored = await store.latest_snapshot(run_id='r2', include_interrupted=True)
     assert stored is not None and [m.kind for m in stored.messages] == ['request']
 
     async with agent.run_stream(
