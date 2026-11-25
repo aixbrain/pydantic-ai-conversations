@@ -1485,15 +1485,15 @@ email = [
 
 [[package]]
 name = "pydantic-ai-app-factory"
-version = "0.5.0"
+version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastapi" },
     { name = "pydantic-ai-slim" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/33/b7/3a1186c3d5d04480e8c0cad3cb5c65ea096d937cb013fabd83dd6e1ade11/pydantic_ai_app_factory-0.5.0.tar.gz", hash = "sha256:b920b1babc24d56df368c48f76f03338a63e55745f7a2ef5fd249b8b70cc08a3", size = 78845, upload-time = "2026-11-23T12:57:30.342Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c2/a5/a8954ac29e083046ba237de512f35d2fc09da84f7d1e91aeedf246b819de/pydantic_ai_app_factory-0.6.0.tar.gz", hash = "sha256:200f61c919c1407f5905fd262dc7815a8c16f831c3d16bd27060d5f4a4706c5f", size = 82674, upload-time = "2026-11-25T10:18:03.795Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3c/20/a96c57c6ac4a16ea4b5e9eebc98ad3fb1d66df219a8f723976938e795657/pydantic_ai_app_factory-0.5.0-py3-none-any.whl", hash = "sha256:6b33b78bcf322fdb817b954c097d426a9cbc978815516a4440dd306922adb079", size = 37716, upload-time = "2026-11-23T12:57:29.362Z" },
+    { url = "https://files.pythonhosted.org/packages/59/2d/63c0cef526e382c62ddafa8439e1da8cef680960816b251c9632e848df3c/pydantic_ai_app_factory-0.6.0-py3-none-any.whl", hash = "sha256:8000a9f0653fd1398c5a0396185f08c421287ab23375eccb2acd2566252c4fe3", size = 39444, upload-time = "2026-11-25T10:18:02.636Z" },
 ]
 
 [[package]]
@@ -1546,7 +1546,7 @@ requires-dist = [
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.2" },
     { name = "psycopg-pool", marker = "extra == 'postgres'", specifier = ">=3.2" },
     { name = "pydantic", specifier = ">=2" },
-    { name = "pydantic-ai-app-factory", specifier = ">=0.5,<0.6" },
+    { name = "pydantic-ai-app-factory", specifier = ">=0.5,<0.7" },
     { name = "pydantic-ai-harness", specifier = ">=0.71,<0.72" },
     { name = "pydantic-ai-slim", specifier = ">=2.16,<3" },
     { name = "pymongo", marker = "extra == 'mongodb'", specifier = ">=4.17" },

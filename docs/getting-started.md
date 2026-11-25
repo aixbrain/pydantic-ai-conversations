@@ -53,6 +53,10 @@ The `auth` stub stands in for a real provider that reads the request; `tenant_id
 the harness's runs and snapshots next to this package's conversations and turns. Delete the
 file to start over.
 
+With app factory 0.6 or later, pass `continue_on_disconnect=True` to `create_agent_app` so a
+`/chat` run whose client closes the tab or reloads still finishes and stores its answer; the
+frontend shows it once it loads the conversation again.
+
 The agent must declare its system text as `instructions=`, not the legacy `system_prompt=`.
 Instructions are re-rendered per request, while a system prompt would be stored with every
 turn and repeated when the history is concatenated.

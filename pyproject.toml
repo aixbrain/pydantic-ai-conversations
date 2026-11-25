@@ -31,7 +31,7 @@ dependencies = [
     # collide with that pin.
     "pydantic>=2",
     "pydantic-ai-slim>=2.16,<3",
-    "pydantic-ai-app-factory>=0.5,<0.6",
+    "pydantic-ai-app-factory>=0.5,<0.7",
     # 0.x: this package leans on four harness guarantees verified against 0.71.x -- `list_runs`
     # sorted by started_at ascending, `latest_snapshot` returning complete snapshots only, no
     # delete primitive, and `StepPersistence` adopting `ctx.run_id` as the run id as long as no
